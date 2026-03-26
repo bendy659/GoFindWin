@@ -1,0 +1,29 @@
+{
+    "schemaVersion": 1,
+    "id": "gofindwin",
+    "version": "${version}",
+    "name": "GoFindWin",
+    "description": "",
+    "authors": [],
+    "contact": {},
+    "license": "MIT",
+    "icon": "assets/gofindwin/icon.png",
+    "environment": "*",
+    "entrypoints": {
+        "client": [
+            "ru.benos_codex.gofindwin.client.GofindwinClient"
+        ],
+        "main": [
+            "ru.benos_codex.gofindwin.Gofindwin"
+        ]
+    },
+    "mixins": [
+        "gofindwin.mixins.json"
+    ],
+    "depends": {
+        "fabricloader": ">=${loader_version}",
+        "fabric-language-kotlin": ">=${kotlin_loader_version}",
+        "fabric-api": "*",
+        "minecraft": "${minecraft_version}"
+    }
+}
