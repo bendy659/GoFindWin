@@ -71,6 +71,50 @@ object MathExpressionSelfTest {
         checkNear("a = rand_x; b = age_tick; sin(a * 360) * b", 0.0, MathExpression.evaluate("a = rand_x; b = age_tick; sin(a * 360) * b", mapOf("rand_x" to 0.5, "age_tick" to 1.0)))
         checkEquals("randi(2, 2)", 2.0, MathExpression.evaluate("randi(2, 2)", emptyMap()))
         checkEquals("randf(1.5, 1.5)", 1.5, MathExpression.evaluate("randf(1.5, 1.5)", emptyMap()))
+        checkEquals("rand_value(7)", 7.0, MathExpression.evaluate("rand_value(7)", emptyMap()))
+        checkEquals("0xFFFFFF", 0xFFFFFF.toDouble(), MathExpression.evaluate("0xFFFFFF", emptyMap()))
+        checkEquals("red", 0xFF5555.toDouble(), MathExpression.evaluate("red", emptyMap()))
+        checkEquals(
+            "rand_value(red, green, blue)",
+            MathExpression.evaluate("rand_value(red, green, blue)", mapOf("rand" to 0.25, "rand_x" to -0.5, "rand_y" to 0.75))!!,
+            MathExpression.evaluate("rand_value(red, green, blue)", mapOf("rand" to 0.25, "rand_x" to -0.5, "rand_y" to 0.75))
+        )
+        checkEquals(
+            "rand_value(1, 2, 3)",
+            MathExpression.evaluate("rand_value(1, 2, 3)", mapOf("rand" to 0.25, "rand_x" to -0.5, "rand_y" to 0.75))!!,
+            MathExpression.evaluate("rand_value(1, 2, 3)", mapOf("rand" to 0.25, "rand_x" to -0.5, "rand_y" to 0.75))
+        )
+        checkEquals(
+            "t = life_factor; keyframe(t) { 0.0 = 1, 1.0 = 0 }",
+            0.75,
+            MathExpression.evaluate("t = life_factor; keyframe(t) { 0.0 = 1, 1.0 = 0 }", mapOf("life_factor" to 0.25))
+        )
+        checkEquals(
+            "t = life_factor; keyframe(t) { 0.0 = 1, 0.5..0.75 = 0.5, 1.0 = 0 }",
+            0.5,
+            MathExpression.evaluate("t = life_factor; keyframe(t) { 0.0 = 1, 0.5..0.75 = 0.5, 1.0 = 0 }", mapOf("life_factor" to 0.6))
+        )
+        checkNear(
+            "t = life_factor; keyframe(t) { 0.0 = 1, 1.0 = { value = 0, easing = 2 } }",
+            0.75,
+            MathExpression.evaluate("t = life_factor; keyframe(t) { 0.0 = 1, 1.0 = { value = 0, easing = 2 } }", mapOf("life_factor" to 0.5)),
+            0.00001
+        )
+        checkEquals(
+            "t = life_factor; keyframe(t) { 0.0 = #FF0000, 1.0 = #0000FF }",
+            0xFF7F007F.toInt().toDouble(),
+            MathExpression.evaluateColor("t = life_factor; keyframe(t) { 0.0 = #FF0000, 1.0 = #0000FF }", mapOf("life_factor" to 0.5))?.toDouble()
+        )
+        checkEquals(
+            "t = life_factor; keyframe(t) { 0.0 = { value = #00FF00, easing = 1 }, 1.0 = #0000FF }",
+            0xFF00FF00.toInt().toDouble(),
+            MathExpression.evaluateColor("t = life_factor; keyframe(t) { 0.0 = { value = #00FF00, easing = 1 }, 1.0 = #0000FF }", mapOf("life_factor" to 0.0))?.toDouble()
+        )
+        checkEquals(
+            "red color constant",
+            0xFFFF5555.toInt().toDouble(),
+            MathExpression.evaluateColor("red", emptyMap())?.toDouble()
+        )
 
         println("MathExpression self-test passed")
     }

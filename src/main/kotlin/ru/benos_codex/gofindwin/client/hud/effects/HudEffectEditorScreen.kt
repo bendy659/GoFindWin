@@ -11,6 +11,8 @@ import net.minecraft.client.input.CharacterEvent
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
+import net.minecraft.resources.Identifier
+import org.lwjgl.glfw.GLFW
 import ru.benos_codex.gofindwin.client.hud.TimerHudConfigManager
 import kotlin.math.max
 
@@ -23,6 +25,9 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     }
 
     private val rebuildFromScratch = true
+    private var blankPendingTooltipText: String? = null
+    private var blankPendingTooltipX: Int = 0
+    private var blankPendingTooltipY: Int = 0
 
     private data class Rect(val left: Int, val top: Int, val width: Int, val height: Int) {
         val right get() = left + width
@@ -35,8 +40,11 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private class StyledEditField(font: net.minecraft.client.gui.Font, x: Int, y: Int, width: Int, height: Int, hint: Component) :
         EditBox(font, x, y, width, height, hint) {
+        var palettePreview = false
+
         init {
             setBordered(true)
+            setMaxLength(1024)
             setTextColor(0xFFF7F8FA.toInt())
             setTextColorUneditable(0xFFD4D9E0.toInt())
         }
@@ -44,7 +52,49 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         override fun renderWidget(guiGraphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
             val fill = if (isFocused) 0x2612161D else 0x180E1117
             guiGraphics.fill(getX(), getY(), getX() + width, getY() + height, fill)
+            val hideVanillaText = palettePreview && !isFocused
+            val normalTextColor = 0xFFF7F8FA.toInt()
+            val normalUneditableColor = 0xFFD4D9E0.toInt()
+            if (hideVanillaText) {
+                setTextColor(0x00FFFFFF)
+                setTextColorUneditable(0x00FFFFFF)
+            }
             super.renderWidget(guiGraphics, mouseX, mouseY, partialTick)
+            if (hideVanillaText) {
+                setTextColor(normalTextColor)
+                setTextColorUneditable(normalUneditableColor)
+                val content = value
+                val drawX = getX() + 5
+                val drawY = getY() + (height - Minecraft.getInstance().font.lineHeight) / 2
+                renderPalettePreview(guiGraphics, drawX, drawY, content)
+            }
+        }
+
+        private fun renderPalettePreview(guiGraphics: GuiGraphics, x: Int, y: Int, raw: String) {
+            val font = Minecraft.getInstance().font
+            var drawX = x
+            val segments = raw.split(",")
+            segments.forEachIndexed { index, segment ->
+                val text = segment.trim()
+                if (text.isNotEmpty()) {
+                    val color = parsePreviewColor(text)
+                    guiGraphics.drawString(font, text, drawX, y, color)
+                    drawX += font.width(text)
+                }
+                if (index != segments.lastIndex) {
+                    guiGraphics.drawString(font, ",", drawX, y, 0xFFF7F8FA.toInt())
+                    drawX += font.width(",")
+                }
+            }
+        }
+
+        private fun parsePreviewColor(raw: String): Int {
+            val value = raw.removePrefix("#")
+            return when (value.length) {
+                6 -> value.toLongOrNull(16)?.toInt()?.let { 0xFF000000.toInt() or it }
+                8 -> value.toLongOrNull(16)?.toInt()
+                else -> null
+            } ?: 0xFFF7F8FA.toInt()
         }
     }
 
@@ -59,7 +109,22 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         private var cursor = 0
         private var scrollLine = 0
         private var maxLength = 4096
+        private var textScale = 1.0f
         private var responder: (String) -> Unit = {}
+        private var selectionAnchor = 0
+        private var selectionCursor = 0
+        private var draggingSelection = false
+        private val builtinVariables = setOf(
+            "rand", "rand_x", "rand_y", "life_time", "life_factor",
+            "pos_x", "pos_y", "start_pos_x", "start_pos_y",
+            "hud_left", "hud_right", "hud_top", "hud_bottom", "hud_center_x", "hud_center_y",
+            "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
+            "gold", "gray", "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white"
+        )
+        private val builtinFunctions = setOf(
+            "sin", "cos", "pow", "lerp", "int", "mod", "pos",
+            "randi", "randf", "rand_value", "keyframe"
+        )
 
         fun setResponder(responder: (String) -> Unit) {
             this.responder = responder
@@ -74,6 +139,8 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         fun setValue(value: String) {
             this.value = value.take(maxLength)
             cursor = cursor.coerceIn(0, this.value.length)
+            selectionAnchor = cursor
+            selectionCursor = cursor
             ensureCursorVisible()
         }
 
@@ -82,13 +149,38 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         override fun renderWidget(guiGraphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
             val fill = if (isFocused) 0xD010141B.toInt() else 0xC80D1117.toInt()
             guiGraphics.fill(getX(), getY(), getX() + width, getY() + height, fill)
-            val textLeft = getX() + 10
+            val gutterWidth = lineNumberGutterWidth()
+            val textLeft = getX() + gutterWidth + 10
             val textTop = getY() + 10
-            val availableLines = ((height - 20) / textFont.lineHeight).coerceAtLeast(1)
+            val availableLines = visibleLineCount()
             val lines = value.split('\n')
             val visibleLines = lines.drop(scrollLine).take(availableLines)
+            val selection = selectionRange()
+            guiGraphics.fill(getX(), getY(), getX() + gutterWidth, getY() + height, 0x1813171E)
+            guiGraphics.fill(getX() + gutterWidth, getY() + 6, getX() + gutterWidth + 1, getY() + height - 6, 0x22FFFFFF)
             visibleLines.forEachIndexed { index, line ->
-                guiGraphics.drawString(textFont, line, textLeft, textTop + index * textFont.lineHeight, 0xFFFFFFFF.toInt())
+                val absoluteLine = scrollLine + index
+                val lineStart = absoluteIndexForLine(absoluteLine)
+                val lineEnd = lineStart + line.length
+                val lineSelectionStart = selection?.first?.coerceIn(lineStart, lineEnd)
+                val lineSelectionEnd = selection?.second?.coerceIn(lineStart, lineEnd)
+                val drawY = textTop + index * textFont.lineHeight
+                val lineNumberText = (absoluteLine + 1).toString()
+                drawScaledString(
+                    guiGraphics,
+                    lineNumberText,
+                    getX() + gutterWidth - 6 - scaledTextWidth(lineNumberText),
+                    drawY,
+                    0x7FA0A9B6
+                )
+                if (lineSelectionStart != null && lineSelectionEnd != null && lineSelectionStart < lineSelectionEnd) {
+                    val startColumn = lineSelectionStart - lineStart
+                    val endColumn = lineSelectionEnd - lineStart
+                    val selectionX = textLeft + scaledTextWidth(line.take(startColumn))
+                    val selectionRight = textLeft + scaledTextWidth(line.take(endColumn))
+                    guiGraphics.fill(selectionX, drawY, selectionRight, drawY + scaledLineHeight(), 0x664B6EA8)
+                }
+                renderHighlightedLine(guiGraphics, line, textLeft, drawY)
             }
             if (isFocused) {
                 val cursorPos = cursorPosition()
@@ -96,28 +188,58 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                 if (visibleLine in 0 until availableLines) {
                     val lineText = lines.getOrElse(cursorPos.first) { "" }
                     val beforeCursor = lineText.take(cursorPos.second.coerceAtMost(lineText.length))
-                    val cursorX = textLeft + textFont.width(beforeCursor)
-                    val cursorY = textTop + visibleLine * textFont.lineHeight
-                    guiGraphics.fill(cursorX, cursorY, cursorX + 1, cursorY + textFont.lineHeight, 0xFFFFFFFF.toInt())
+                    val cursorX = textLeft + scaledTextWidth(beforeCursor)
+                    val cursorY = textTop + visibleLine * scaledLineHeight()
+                    guiGraphics.fill(cursorX, cursorY, cursorX + 1, cursorY + scaledLineHeight(), 0xFFFFFFFF.toInt())
                 }
             }
+            renderScrollbar(guiGraphics)
             val border = if (isFocused) 0x88FFFFFF.toInt() else 0x44FFFFFF
             guiGraphics.fill(getX(), getY(), getX() + width, getY() + 1, border)
             guiGraphics.fill(getX(), getY() + height - 1, getX() + width, getY() + height, border)
             guiGraphics.fill(getX(), getY(), getX() + 1, getY() + height, border)
             guiGraphics.fill(getX() + width - 1, getY(), getX() + width, getY() + height, border)
+            renderSuggestions(guiGraphics)
         }
 
         override fun onClick(mouseButtonEvent: MouseButtonEvent, bl: Boolean) {
             setFocused(true)
             cursor = nearestCursor(mouseButtonEvent.x(), mouseButtonEvent.y())
+            selectionAnchor = cursor
+            selectionCursor = cursor
             ensureCursorVisible()
+        }
+
+        override fun mouseDragged(mouseButtonEvent: MouseButtonEvent, d: Double, e: Double): Boolean {
+            if (!isFocused || mouseButtonEvent.button() != 0) return false
+            if (!draggingSelection) {
+                draggingSelection = true
+                if (selectionAnchor == selectionCursor) {
+                    selectionAnchor = cursor
+                }
+            }
+            cursor = nearestCursor(mouseButtonEvent.x(), mouseButtonEvent.y())
+            selectionCursor = cursor
+            ensureCursorVisible()
+            return true
+        }
+
+        override fun mouseReleased(mouseButtonEvent: MouseButtonEvent): Boolean {
+            if (mouseButtonEvent.button() == 0) {
+                draggingSelection = false
+            }
+            return super.mouseReleased(mouseButtonEvent)
         }
 
         override fun mouseScrolled(mouseX: Double, mouseY: Double, scrollX: Double, scrollY: Double): Boolean {
             if (!isMouseOver(mouseX, mouseY)) return false
+            if (isControlPressed()) {
+                textScale = (textScale + if (scrollY > 0) 0.1f else -0.1f).coerceIn(0.75f, 2.0f)
+                ensureCursorVisible()
+                return true
+            }
             val lines = value.split('\n').size
-            val availableLines = ((height - 20) / textFont.lineHeight).coerceAtLeast(1)
+            val availableLines = visibleLineCount()
             val maxScroll = (lines - availableLines).coerceAtLeast(0)
             scrollLine = (scrollLine - scrollY.toInt()).coerceIn(0, maxScroll)
             return true
@@ -138,28 +260,41 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                     insert("\n")
                     return true
                 }
+                258 -> {
+                    if (applySuggestionIfVisible()) return true
+                    insert("    ")
+                    return true
+                }
                 259 -> {
+                    if (deleteSelection()) return true
                     if (cursor > 0) {
                         value = value.removeRange(cursor - 1, cursor)
                         cursor -= 1
+                        selectionAnchor = cursor
+                        selectionCursor = cursor
                         notifyResponder()
                     }
                     return true
                 }
                 261 -> {
+                    if (deleteSelection()) return true
                     if (cursor < value.length) {
                         value = value.removeRange(cursor, cursor + 1)
+                        selectionAnchor = cursor
+                        selectionCursor = cursor
                         notifyResponder()
                     }
                     return true
                 }
                 262 -> {
                     cursor = (cursor + 1).coerceAtMost(value.length)
+                    updateSelectionFromKeyboard()
                     ensureCursorVisible()
                     return true
                 }
                 263 -> {
                     cursor = (cursor - 1).coerceAtLeast(0)
+                    updateSelectionFromKeyboard()
                     ensureCursorVisible()
                     return true
                 }
@@ -173,11 +308,13 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                 }
                 268 -> {
                     cursor = lineStart(cursor)
+                    updateSelectionFromKeyboard()
                     ensureCursorVisible()
                     return true
                 }
                 269 -> {
                     cursor = lineEnd(cursor)
+                    updateSelectionFromKeyboard()
                     ensureCursorVisible()
                     return true
                 }
@@ -186,9 +323,13 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         }
 
         private fun insert(text: String) {
-            if (text.isEmpty() || value.length + text.length > maxLength) return
+            if (text.isEmpty()) return
+            deleteSelection()
+            if (value.length + text.length > maxLength) return
             value = value.substring(0, cursor) + text + value.substring(cursor)
             cursor += text.length
+            selectionAnchor = cursor
+            selectionCursor = cursor
             notifyResponder()
         }
 
@@ -204,6 +345,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             var index = 0
             for (i in 0 until newLine) index += lines[i].length + 1
             cursor = index + column.coerceAtMost(lines.getOrElse(newLine) { "" }.length)
+            updateSelectionFromKeyboard()
             ensureCursorVisible()
         }
 
@@ -227,12 +369,12 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         private fun nearestCursor(mouseX: Double, mouseY: Double): Int {
             val lines = value.split('\n')
             val relativeY = (mouseY.toInt() - getY() - 10).coerceAtLeast(0)
-            val targetLine = (relativeY / textFont.lineHeight + scrollLine).coerceIn(0, lines.lastIndex.coerceAtLeast(0))
+            val targetLine = (relativeY / scaledLineHeight() + scrollLine).coerceIn(0, lines.lastIndex.coerceAtLeast(0))
             val lineText = lines.getOrElse(targetLine) { "" }
-            val relativeX = (mouseX.toInt() - getX() - 10).coerceAtLeast(0)
+            val relativeX = (mouseX.toInt() - getX() - lineNumberGutterWidth() - 10).coerceAtLeast(0)
             var bestColumn = 0
             for (column in 0..lineText.length) {
-                if (textFont.width(lineText.take(column)) > relativeX) break
+                if (scaledTextWidth(lineText.take(column)) > relativeX) break
                 bestColumn = column
             }
             var index = 0
@@ -242,7 +384,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
         private fun ensureCursorVisible() {
             val line = cursorPosition().first
-            val availableLines = ((height - 20) / textFont.lineHeight).coerceAtLeast(1)
+            val availableLines = visibleLineCount()
             val maxScroll = (value.split('\n').size - availableLines).coerceAtLeast(0)
             when {
                 line < scrollLine -> scrollLine = line
@@ -250,6 +392,213 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             }
             scrollLine = scrollLine.coerceIn(0, maxScroll)
         }
+
+        private fun selectionRange(): Pair<Int, Int>? {
+            val start = minOf(selectionAnchor, selectionCursor)
+            val end = maxOf(selectionAnchor, selectionCursor)
+            return if (start == end) null else start to end
+        }
+
+        private fun deleteSelection(): Boolean {
+            val selection = selectionRange() ?: return false
+            value = value.removeRange(selection.first, selection.second)
+            cursor = selection.first
+            selectionAnchor = cursor
+            selectionCursor = cursor
+            notifyResponder()
+            return true
+        }
+
+        private fun updateSelectionFromKeyboard() {
+            selectionAnchor = cursor
+            selectionCursor = cursor
+        }
+
+        private fun absoluteIndexForLine(line: Int): Int {
+            val lines = value.split('\n')
+            val clamped = line.coerceIn(0, lines.lastIndex.coerceAtLeast(0))
+            var index = 0
+            for (i in 0 until clamped) index += lines[i].length + 1
+            return index
+        }
+
+        private fun renderHighlightedLine(guiGraphics: GuiGraphics, line: String, x: Int, y: Int) {
+            var drawX = x
+            val regex = Regex("0x[0-9A-Fa-f]{6,8}|#[0-9A-Fa-f]{6,8}|\\b(keyframe|value|easing|rand|rand_x|rand_y|life_time|life_factor|pos_x|pos_y|start_pos_x|start_pos_y|hud_left|hud_right|hud_top|hud_bottom|hud_center_x|hud_center_y|sin|cos|pow|lerp|int|mod|pos|randi|randf|rand_value|black|dark_blue|dark_green|dark_aqua|dark_red|dark_purple|gold|gray|dark_gray|blue|green|aqua|red|light_purple|yellow|white)\\b|\\b\\d+(?:\\.\\d+)?\\b|[=+\\-*/{}(),.:]")
+            val specialVariables = builtinVariables - setOf(
+                "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
+                "gold", "gray", "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white"
+            )
+            val colorConstants = builtinVariables intersect setOf(
+                "black", "dark_blue", "dark_green", "dark_aqua", "dark_red", "dark_purple",
+                "gold", "gray", "dark_gray", "blue", "green", "aqua", "red", "light_purple", "yellow", "white"
+            )
+            val functions = builtinFunctions - setOf("keyframe")
+            val localVariables = Regex("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=").findAll(value)
+                .map { it.groupValues[1] }
+                .filterNot { it in specialVariables || it in functions || it in setOf("keyframe", "value", "easing") }
+                .toSet()
+            var lastIndex = 0
+            regex.findAll(line).forEach { match ->
+                if (match.range.first > lastIndex) {
+                    val plain = line.substring(lastIndex, match.range.first)
+                    drawScaledString(guiGraphics, plain, drawX, y, 0xFFF7F8FA.toInt())
+                    drawX += scaledTextWidth(plain)
+                }
+                val token = match.value
+                val color = when {
+                    token.startsWith("#") || token.startsWith("0x") || token.startsWith("0X") -> parsePreviewColor(token)
+                    token.matches(Regex("\\d+(?:\\.\\d+)?")) -> 0xFF8BD5FF.toInt()
+                    token in setOf("keyframe", "value", "easing") -> 0xFFFFE28A.toInt()
+                    token.matches(Regex("[=+\\-*/{}(),.]")) -> 0xFFB8C0CC.toInt()
+                    token in functions -> 0xFFA6E3A1.toInt()
+                    token in colorConstants -> 0xFFF38BA8.toInt()
+                    token in specialVariables -> 0xFF89B4FA.toInt()
+                    token in localVariables -> 0xFFF5C2E7.toInt()
+                    else -> 0xFFF7F8FA.toInt()
+                }
+                drawScaledString(guiGraphics, token, drawX, y, color)
+                drawX += scaledTextWidth(token)
+                lastIndex = match.range.last + 1
+            }
+            if (lastIndex < line.length) {
+                val plain = line.substring(lastIndex)
+                drawScaledString(guiGraphics, plain, drawX, y, 0xFFF7F8FA.toInt())
+            }
+        }
+
+        private fun parsePreviewColor(raw: String): Int {
+            val value = raw.removePrefix("#").removePrefix("0x").removePrefix("0X")
+            return when (value.length) {
+                6 -> value.toLongOrNull(16)?.toInt()?.let { 0xFF000000.toInt() or it }
+                8 -> value.toLongOrNull(16)?.toInt()
+                else -> null
+            } ?: 0xFFF7F8FA.toInt()
+        }
+
+        private fun visibleLineCount(): Int = ((height - 20) / scaledLineHeight()).coerceAtLeast(1)
+
+        private fun lineNumberGutterWidth(): Int {
+            val totalLines = value.split('\n').size.coerceAtLeast(1)
+            return (scaledTextWidth(totalLines.toString()) + 14).coerceAtLeast(28)
+        }
+
+        private fun currentTokenRange(): IntRange? {
+            if (value.isEmpty()) return null
+            val safeCursor = cursor.coerceIn(0, value.length)
+            var start = safeCursor
+            while (start > 0 && value[start - 1].isIdentifierChar()) start--
+            var end = safeCursor
+            while (end < value.length && value[end].isIdentifierChar()) end++
+            return if (start == end) null else start until end
+        }
+
+        private fun currentTokenPrefix(): String? {
+            val range = currentTokenRange() ?: return null
+            val safeCursor = cursor.coerceIn(range.first, range.last + 1)
+            return value.substring(range.first, safeCursor)
+                .takeIf { it.isNotBlank() && it.any(Char::isLetter) }
+        }
+
+        private fun suggestionItems(): List<String> {
+            val prefix = currentTokenPrefix()?.lowercase() ?: return emptyList()
+            val locals = Regex("\\b([A-Za-z_][A-Za-z0-9_]*)\\s*=").findAll(value)
+                .map { it.groupValues[1] }
+                .toSet()
+            return (builtinVariables + builtinFunctions + locals + setOf("value", "easing"))
+                .filter { it.lowercase().startsWith(prefix) && it.lowercase() != prefix }
+                .sorted()
+                .take(8)
+        }
+
+        private fun applySuggestionIfVisible(): Boolean {
+            val suggestions = suggestionItems()
+            val replacement = suggestions.firstOrNull() ?: return false
+            val range = currentTokenRange() ?: return false
+            value = value.replaceRange(range, replacement)
+            cursor = range.first + replacement.length
+            selectionAnchor = cursor
+            selectionCursor = cursor
+            notifyResponder()
+            return true
+        }
+
+        private fun renderScrollbar(guiGraphics: GuiGraphics) {
+            val lines = value.split('\n').size
+            val visibleLines = visibleLineCount()
+            val maxScroll = (lines - visibleLines).coerceAtLeast(0)
+            if (maxScroll <= 0) return
+            val trackLeft = getX() + width - 8
+            val trackTop = getY() + 8
+            val trackBottom = getY() + height - 8
+            guiGraphics.fill(trackLeft, trackTop, trackLeft + 3, trackBottom, 0x22FFFFFF)
+            val trackHeight = (trackBottom - trackTop).coerceAtLeast(1)
+            val thumbHeight = max((trackHeight * visibleLines / lines.coerceAtLeast(1)), 18)
+            val travel = (trackHeight - thumbHeight).coerceAtLeast(0)
+            val thumbTop = trackTop + if (maxScroll == 0) 0 else (travel * scrollLine / maxScroll)
+            guiGraphics.fill(trackLeft - 1, thumbTop, trackLeft + 4, thumbTop + thumbHeight, 0x88FFFFFF.toInt())
+        }
+
+        private fun renderSuggestions(guiGraphics: GuiGraphics) {
+            if (!isFocused) return
+            val suggestions = suggestionItems()
+            if (suggestions.isEmpty()) return
+            val (lineIndex, columnIndex) = cursorPosition()
+            val visibleLine = lineIndex - scrollLine
+            if (visibleLine !in 0 until visibleLineCount()) return
+            val lineText = value.split('\n').getOrElse(lineIndex) { "" }
+            val prefix = currentTokenPrefix() ?: return
+            val beforeCursor = lineText.take(columnIndex)
+            val popupX = (getX() + lineNumberGutterWidth() + 10 + scaledTextWidth(beforeCursor) - scaledTextWidth(prefix)).coerceAtLeast(getX() + 8)
+            val popupY = getY() + 10 + (visibleLine + 1) * scaledLineHeight() + 4
+            val popupWidth = suggestions.maxOf { scaledTextWidth(it) }.coerceAtLeast(80) + 12
+            val popupHeight = suggestions.size * scaledLineHeight() + 8
+            guiGraphics.fill(popupX, popupY, popupX + popupWidth, popupY + popupHeight, 0xE010141B.toInt())
+            guiGraphics.fill(popupX, popupY, popupX + popupWidth, popupY + 1, 0x66FFFFFF)
+            guiGraphics.fill(popupX, popupY + popupHeight - 1, popupX + popupWidth, popupY + popupHeight, 0x66FFFFFF)
+            guiGraphics.fill(popupX, popupY, popupX + 1, popupY + popupHeight, 0x66FFFFFF)
+            guiGraphics.fill(popupX + popupWidth - 1, popupY, popupX + popupWidth, popupY + popupHeight, 0x66FFFFFF)
+            suggestions.forEachIndexed { index, item ->
+                drawScaledString(guiGraphics, item, popupX + 6, popupY + 4 + index * scaledLineHeight(), 0xFFF7F8FA.toInt())
+            }
+        }
+
+        private fun Char.isIdentifierChar(): Boolean = isLetterOrDigit() || this == '_' || this == '.'
+
+        private fun isControlPressed(): Boolean {
+            val windowHandle = resolveWindowHandle() ?: return false
+            return GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_LEFT_CONTROL) == GLFW.GLFW_PRESS ||
+                GLFW.glfwGetKey(windowHandle, GLFW.GLFW_KEY_RIGHT_CONTROL) == GLFW.GLFW_PRESS
+        }
+
+        private fun resolveWindowHandle(): Long? {
+            val window = Minecraft.getInstance().window
+            return try {
+                val getter = window.javaClass.methods.firstOrNull { it.parameterCount == 0 && it.returnType == Long::class.javaPrimitiveType }
+                when (val value = getter?.invoke(window)) {
+                    is Long -> value
+                    is Number -> value.toLong()
+                    else -> null
+                }
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+        private fun scaledLineHeight(): Int = (textFont.lineHeight * textScale).toInt().coerceAtLeast(1)
+
+        private fun scaledTextWidth(text: String): Int = (textFont.width(text) * textScale).toInt()
+
+        private fun drawScaledString(guiGraphics: GuiGraphics, text: String, x: Int, y: Int, color: Int) {
+            if (text.isEmpty()) return
+            val pose = guiGraphics.pose()
+            pose.pushMatrix()
+            pose.translate(x.toFloat(), y.toFloat())
+            pose.scale(textScale, textScale)
+            guiGraphics.drawString(textFont, text, 0, 0, color)
+            pose.popMatrix()
+        }
+
     }
 
     private class StyledActionButton(
@@ -313,7 +662,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     private var selectedCategory = FinishEffectCategory.AVERAGE
     private val workingPresets = mutableMapOf<FinishEffectCategory, HudCelebrationConfig>()
     private val numericFields = mutableListOf<NumericField>()
-    private var autoPreviewIntervalMs = 1200L
+    private var autoPreviewIntervalMs = 0L
     private var nextAutoPreviewAtMs = 0L
     private var syncingFields = false
     private var scrollOffset = 0
@@ -328,11 +677,22 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     private var bodySplitRatio = 0.56f
     private val blankTooltipTargets = mutableMapOf<String, Rect>()
     private val blankOverlayInfoTargets = mutableMapOf<String, Rect>()
+    private var blankMiniPreviewRect: Rect? = null
     private var blankOverlayOpen = false
     private var blankOverlayTarget: StyledEditField? = null
+    private var blankOverlayTitle = "variable"
+    private var blankOverlayInfoScrollOffset = 0
+    private var blankOverlayInfoContentHeight = 0
+    private var draggingBlankOverlayInfoScrollbar = false
+    private var draggingBlankOverlaySplit = false
+    private var draggingBlankOverlayColumnSplit = false
+    private var blankOverlaySplitRatio = 0.22f
+    private var blankOverlayPreviewRatio = 0.34f
     private lateinit var blankOverlayField: OverlayTextArea
     private var blankOverlayLeftRect = Rect(0, 0, 0, 0)
     private var blankOverlayRightRect = Rect(0, 0, 0, 0)
+    private var blankOverlayPreviewRect = Rect(0, 0, 0, 0)
+    private var blankOverlayRect = Rect(0, 0, 0, 0)
 
     private lateinit var blankCategoryButton: StyledActionButton
     private lateinit var blankSpawnModeButton: StyledActionButton
@@ -342,6 +702,8 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     private lateinit var blankCountField: StyledEditField
     private lateinit var blankRateField: StyledEditField
     private lateinit var blankLifetimeField: StyledEditField
+    private lateinit var blankOriginXField: StyledEditField
+    private lateinit var blankOriginYField: StyledEditField
     private lateinit var blankColorField: StyledEditField
     private lateinit var blankTextureIdField: StyledEditField
     private lateinit var blankPickTextureButton: StyledActionButton
@@ -349,9 +711,24 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     private lateinit var blankUvYField: StyledEditField
     private lateinit var blankUvWidthField: StyledEditField
     private lateinit var blankUvHeightField: StyledEditField
+    private lateinit var blankTextureTintField: StyledEditField
     private lateinit var blankFramesXField: StyledEditField
     private lateinit var blankFramesYField: StyledEditField
     private lateinit var blankFramesField: StyledEditField
+    private lateinit var blankFrameTimeField: StyledEditField
+    private lateinit var blankItemIdField: StyledEditField
+    private lateinit var blankPickItemButton: StyledActionButton
+    private lateinit var blankUseTargetItemButton: StyledActionButton
+    private lateinit var blankTextContentField: StyledEditField
+    private lateinit var blankTextColorField: StyledEditField
+    private lateinit var blankTextSizeField: StyledEditField
+    private lateinit var blankTextShadowButton: StyledActionButton
+    private lateinit var blankTextShadowColorField: StyledEditField
+    private lateinit var blankPositionXField: StyledEditField
+    private lateinit var blankPositionYField: StyledEditField
+    private lateinit var blankRotationField: StyledEditField
+    private lateinit var blankScaleField: StyledEditField
+    private lateinit var blankAlphaField: StyledEditField
 
     private val scaledMargin: Int
         get() {
@@ -534,6 +911,8 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     override fun render(guiGraphics: GuiGraphics, mouseX: Int, mouseY: Int, partialTick: Float) {
         guiGraphics.fill(0, 0, width, height, 0x55000000)
         if (rebuildFromScratch) {
+            maybeSpawnAutoPreview()
+            blankPendingTooltipText = null
             val frame = bodyRect()
             val innerMargin = scaledBodyInnerMargin
             val panels = bodyPanels()
@@ -554,6 +933,9 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             guiGraphics.fill(panels.second.left, panels.second.top, panels.second.right, panels.second.bottom, 0x1AFFFFFF)
             drawOutline(guiGraphics, panels.first, 0x40FFFFFF)
             drawOutline(guiGraphics, panels.second, 0x40FFFFFF)
+            if (!blankOverlayOpen) {
+                renderPreviewClipped(guiGraphics)
+            }
             guiGraphics.fill(
                 divider.left,
                 divider.top,
@@ -565,13 +947,19 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                     else -> 0x66FFFFFF.toInt()
                 }
             )
-            val blankContent = blankContentRect(layout)
-            guiGraphics.enableScissor(blankContent.left, blankContent.top, blankContent.right, blankContent.bottom)
-            super.render(guiGraphics, mouseX, mouseY, partialTick)
-            renderBlankProps(guiGraphics, layout, mouseX, mouseY)
-            guiGraphics.disableScissor()
-            renderBlankScrollbar(guiGraphics, layout)
+            if (!blankOverlayOpen) {
+                val blankContent = blankContentRect(layout)
+                guiGraphics.enableScissor(blankContent.left, blankContent.top, blankContent.right, blankContent.bottom)
+                super.render(guiGraphics, mouseX, mouseY, partialTick)
+                renderBlankProps(guiGraphics, layout, mouseX, mouseY)
+                guiGraphics.disableScissor()
+                renderBlankScrollbar(guiGraphics, layout)
+            }
+            if (blankMiniPreviewRect?.contains(mouseX.toDouble(), mouseY.toDouble()) == true) {
+                renderBlankTextureMiniTooltip(guiGraphics, mouseX + 14, mouseY + 14)
+            }
             if (blankOverlayOpen) renderBlankOverlay(guiGraphics, mouseX, mouseY)
+            blankPendingTooltipText?.let { renderBlankTooltip(guiGraphics, blankPendingTooltipX, blankPendingTooltipY, it) }
             return
         }
         maybeSpawnAutoPreview()
@@ -670,14 +1058,27 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
         if (rebuildFromScratch) {
             if (blankOverlayOpen) {
+                if (mouseButtonEvent.button() == 0 && blankOverlaySplitHandleRect().contains(mouseButtonEvent.x(), mouseButtonEvent.y())) {
+                    draggingBlankOverlaySplit = true
+                    return true
+                }
+                if (mouseButtonEvent.button() == 0 && blankOverlayColumnHandleRect().contains(mouseButtonEvent.x(), mouseButtonEvent.y())) {
+                    draggingBlankOverlayColumnSplit = true
+                    return true
+                }
+                if (mouseButtonEvent.button() == 0 && blankOverlayInfoScrollbarThumbRect().contains(mouseButtonEvent.x(), mouseButtonEvent.y())) {
+                    draggingBlankOverlayInfoScrollbar = true
+                    updateBlankOverlayInfoScrollFromMouse(mouseButtonEvent.y())
+                    return true
+                }
                 val handled = blankOverlayField.mouseClicked(mouseButtonEvent, bl)
-                if (!handled && !blankOverlayLeftRect.contains(mouseButtonEvent.x(), mouseButtonEvent.y()) && !blankOverlayRightRect.contains(mouseButtonEvent.x(), mouseButtonEvent.y())) {
+                if (!handled && !blankOverlayRect.contains(mouseButtonEvent.x(), mouseButtonEvent.y())) {
                     closeBlankOverlay()
                     return true
                 }
                 return handled
             }
-            if (mouseButtonEvent.button() == 1) {
+            if (mouseButtonEvent.button() == 0) {
                 hoveredBlankEditableField(mouseButtonEvent.x(), mouseButtonEvent.y())?.let {
                     openBlankOverlay(it)
                     return true
@@ -705,11 +1106,17 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                         blankRenderTypeButton.isMouseOver(x, y) ||
                         blankTextureModeButton.isMouseOver(x, y) ||
                         blankTextureInterpolateButton.isMouseOver(x, y) ||
+                        blankPickItemButton.isMouseOver(x, y) ||
+                        blankUseTargetItemButton.isMouseOver(x, y) ||
+                        blankTextShadowButton.isMouseOver(x, y) ||
                         blankCountField.isMouseOver(x, y) ||
                         blankRateField.isMouseOver(x, y) ||
                         blankLifetimeField.isMouseOver(x, y) ||
+                        blankOriginXField.isMouseOver(x, y) ||
+                        blankOriginYField.isMouseOver(x, y) ||
                         blankColorField.isMouseOver(x, y) ||
                         blankTextureIdField.isMouseOver(x, y) ||
+                        blankTextureTintField.isMouseOver(x, y) ||
                         blankPickTextureButton.isMouseOver(x, y) ||
                         blankUvXField.isMouseOver(x, y) ||
                         blankUvYField.isMouseOver(x, y) ||
@@ -717,12 +1124,26 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                         blankUvHeightField.isMouseOver(x, y) ||
                         blankFramesXField.isMouseOver(x, y) ||
                         blankFramesYField.isMouseOver(x, y) ||
-                        blankFramesField.isMouseOver(x, y)
+                        blankFramesField.isMouseOver(x, y) ||
+                        blankFrameTimeField.isMouseOver(x, y) ||
+                        blankItemIdField.isMouseOver(x, y) ||
+                        blankTextContentField.isMouseOver(x, y) ||
+                        blankTextColorField.isMouseOver(x, y) ||
+                        blankTextSizeField.isMouseOver(x, y) ||
+                        blankTextShadowColorField.isMouseOver(x, y) ||
+                        blankPositionXField.isMouseOver(x, y) ||
+                        blankPositionYField.isMouseOver(x, y) ||
+                        blankRotationField.isMouseOver(x, y) ||
+                        blankScaleField.isMouseOver(x, y) ||
+                        blankAlphaField.isMouseOver(x, y)
 
                 if (!clickedInteractive) {
                     listOf(
-                        blankCountField, blankRateField, blankLifetimeField, blankColorField, blankTextureIdField,
-                        blankUvXField, blankUvYField, blankUvWidthField, blankUvHeightField, blankFramesXField, blankFramesYField, blankFramesField
+                        blankCountField, blankRateField, blankLifetimeField, blankOriginXField, blankOriginYField, blankColorField, blankTextureIdField,
+                        blankTextureTintField,
+                        blankUvXField, blankUvYField, blankUvWidthField, blankUvHeightField, blankFramesXField, blankFramesYField, blankFramesField, blankFrameTimeField,
+                        blankItemIdField, blankTextContentField, blankTextColorField, blankTextSizeField, blankTextShadowColorField,
+                        blankPositionXField, blankPositionYField, blankRotationField, blankScaleField, blankAlphaField
                     ).forEach { it.setFocused(false) }
                     setFocused(null)
                 }
@@ -733,7 +1154,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         val x = mouseButtonEvent.x()
         val y = mouseButtonEvent.y()
         val button = mouseButtonEvent.button()
-        if (button == 1) {
+        if (button == 0) {
             (hoveredEditableField(x, y) ?: focusedEditableField())?.let { field ->
                 minecraft.setScreen(HudExpandedFieldEditorScreen(this, field.value, "Edit value") { value ->
                     field.setValue(value)
@@ -755,13 +1176,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             return true
         }
         val handled = super.mouseClicked(mouseButtonEvent, bl)
-        if (button == 0) {
-            hoveredEditableField(x, y)?.let { field ->
-                field.setFocused(true)
-                setFocused(field)
-                return true
-            }
-        }
+        if (button == 0) return handled
         val clickedInteractive = expandableFields().any { it.visible && it.isMouseOver(x, y) } ||
             listOf(categoryButton, renderTypeButton, originButton, spawnModeButton, textureModeButton, texturePlaybackModeButton, textureInterpolateButton, pickItemButton, pickTextureButton, useTargetItemButton, textShadowButton, saveButton, closeButton)
                 .filter { it.visible }
@@ -790,9 +1205,33 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         )
     }
 
+    private data class BlankTexturePreviewFrame(
+        val textureId: Identifier,
+        val uvX: Int,
+        val uvY: Int,
+        val uvWidth: Int,
+        val uvHeight: Int,
+        val textureWidth: Int,
+        val textureHeight: Int
+    )
+
     override fun mouseDragged(mouseButtonEvent: MouseButtonEvent, d: Double, e: Double): Boolean {
         if (rebuildFromScratch) {
-            if (blankOverlayOpen) return blankOverlayField.mouseDragged(mouseButtonEvent, d, e)
+            if (blankOverlayOpen) {
+                if (draggingBlankOverlayInfoScrollbar && mouseButtonEvent.button() == 0) {
+                    updateBlankOverlayInfoScrollFromMouse(mouseButtonEvent.y())
+                    return true
+                }
+                if (draggingBlankOverlaySplit && mouseButtonEvent.button() == 0) {
+                    updateBlankOverlaySplit(mouseButtonEvent.x())
+                    return true
+                }
+                if (draggingBlankOverlayColumnSplit && mouseButtonEvent.button() == 0) {
+                    updateBlankOverlayColumnSplit(mouseButtonEvent.y())
+                    return true
+                }
+                return blankOverlayField.mouseDragged(mouseButtonEvent, d, e)
+            }
             if (draggingBlankScrollbar && mouseButtonEvent.button() == 0) {
                 updateBlankScrollFromMouse(mouseButtonEvent.y())
                 layoutBlankWidgets()
@@ -800,6 +1239,13 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             }
             if (draggingBodySplit && mouseButtonEvent.button() == 0) {
                 updateBodySplit(mouseButtonEvent.x())
+                return true
+            }
+            if (draggingPreview && mouseButtonEvent.button() == 2) {
+                previewPanX += d.toFloat()
+                previewPanY += e.toFloat()
+                HudCelebrationEffectsClient.clear()
+                queuePreview(forceNow = true)
                 return true
             }
             return super.mouseDragged(mouseButtonEvent, d, e)
@@ -826,6 +1272,9 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             if (blankOverlayOpen) blankOverlayField.mouseReleased(mouseButtonEvent)
             if (mouseButtonEvent.button() == 0) draggingBodySplit = false
             if (mouseButtonEvent.button() == 0) draggingBlankScrollbar = false
+            if (mouseButtonEvent.button() == 0) draggingBlankOverlayInfoScrollbar = false
+            if (mouseButtonEvent.button() == 0) draggingBlankOverlaySplit = false
+            if (mouseButtonEvent.button() == 0) draggingBlankOverlayColumnSplit = false
             return super.mouseReleased(mouseButtonEvent)
         }
         if (mouseButtonEvent.button() == 0) draggingScrollbar = false
@@ -834,7 +1283,18 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     }
 
     override fun mouseScrolled(mouseX: Double, mouseY: Double, scrollX: Double, scrollY: Double): Boolean {
-        if (rebuildFromScratch && blankOverlayOpen) return true
+        if (rebuildFromScratch && blankOverlayOpen) {
+            if (blankOverlayField.isMouseOver(mouseX, mouseY) && blankOverlayField.mouseScrolled(mouseX, mouseY, scrollX, scrollY)) {
+                return true
+            }
+            if (blankOverlayLeftRect.contains(mouseX, mouseY)) {
+                val prev = blankOverlayInfoScrollOffset
+                blankOverlayInfoScrollOffset =
+                    (blankOverlayInfoScrollOffset + scrollY.toInt() * SCROLL_STEP).coerceIn(blankOverlayInfoMinScrollOffset(), 0)
+                return blankOverlayInfoScrollOffset != prev
+            }
+            return true
+        }
         if (rebuildFromScratch) {
             val layout = blankLayout()
             if (blankContentRect(layout).contains(mouseX, mouseY) || layout.props.contains(mouseX, mouseY)) {
@@ -842,10 +1302,10 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                 blankScrollOffset = (blankScrollOffset + scrollY.toInt() * SCROLL_STEP).coerceIn(blankMinScrollOffset(layout), 0)
                 if (blankScrollOffset != prev) {
                     layoutBlankWidgets()
-                    return true
                 }
+                return true
             }
-            return super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)
+            return false
         }
         val prev = scrollOffset
         scrollOffset = (scrollOffset + scrollY.toInt() * SCROLL_STEP).coerceIn(minScrollOffset(), 0)
@@ -907,13 +1367,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         queuePreview(forceNow = true)
     }
 
-    private fun cycleOrigin() {
-        val values = HudCelebrationOrigin.entries
-        val next = values[(values.indexOf(currentEmitter().origin) + 1) % values.size]
-        mutateEmitter { it.copy(origin = next) }
-        originButton.setMessage(Component.literal(originLabel()))
-        queuePreview(forceNow = true)
-    }
+    private fun cycleOrigin() = Unit
 
     private fun cycleSpawnMode() {
         val next = when (currentEmitter().spawnMode) {
@@ -1057,17 +1511,27 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private fun queuePreview(forceNow: Boolean = false) {
         val now = System.currentTimeMillis()
-        if (forceNow || autoPreviewIntervalMs <= 0L || now >= nextAutoPreviewAtMs) {
+        val previewDelayMs = previewCycleDelayMs()
+        if (forceNow || previewDelayMs <= 0L || now >= nextAutoPreviewAtMs) {
             HudCelebrationEffectsClient.requestPreview(currentPreset())
-            nextAutoPreviewAtMs = now + autoPreviewIntervalMs.coerceAtLeast(0L)
+            nextAutoPreviewAtMs = now + previewDelayMs
         }
     }
 
     private fun maybeSpawnAutoPreview() {
-        if (autoPreviewIntervalMs > 0L && System.currentTimeMillis() >= nextAutoPreviewAtMs) {
+        val previewDelayMs = previewCycleDelayMs()
+        if (previewDelayMs > 0L && System.currentTimeMillis() >= nextAutoPreviewAtMs) {
             HudCelebrationEffectsClient.requestPreview(currentPreset())
-            nextAutoPreviewAtMs = System.currentTimeMillis() + autoPreviewIntervalMs
+            nextAutoPreviewAtMs = System.currentTimeMillis() + previewDelayMs
         }
+    }
+
+    private fun previewCycleDelayMs(): Long {
+        if (autoPreviewIntervalMs > 0L) return autoPreviewIntervalMs
+        val emitter = currentEmitter()
+        val parsedLifetime = emitter.lifetimeExpression.trim().toIntOrNull()
+            ?: emitter.lifetimeTicks.coerceAtLeast(1)
+        return ((parsedLifetime.coerceAtLeast(1) / 20f) * 1000f).toLong().coerceAtLeast(50L)
     }
 
     private fun currentPreset(): HudCelebrationConfig = workingPresets.getOrPut(selectedCategory) {
@@ -1083,11 +1547,12 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         val base = emitters.firstOrNull() ?: HudCelebrationEmitterConfig()
         if (emitters.isEmpty()) emitters += transform(base) else emitters[0] = transform(base)
         workingPresets[selectedCategory] = preset.copy(emitters = emitters)
+        HudCelebrationConfigManager.savePreset(currentPresetId(), workingPresets.getValue(selectedCategory))
     }
 
     private fun currentPresetId(): String = TimerHudConfigManager.config.finishEffects.profileId(selectedCategory)
     private fun categoryLabel(): String = selectedCategory.name.lowercase()
-    private fun originLabel(): String = currentEmitter().origin.name.lowercase()
+    private fun originLabel(): String = "custom"
     private fun useTargetItemLabel(): String = if (currentEmitter().useTargetItem) "[x] Use target item" else "[ ] Use target item"
     private fun textShadowLabel(): String = if (currentEmitter().textShadowEnabled) "[x] Shadow" else "[ ] Shadow"
     private fun currentColor(): String = currentEmitter().colorPalette.firstOrNull() ?: "#FFFFFF"
@@ -1226,7 +1691,8 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankRateField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0")))
         blankLifetimeField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0")))
         blankColorField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("#FFFFFF")))
-        blankTextureIdField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("minecraft:texture")))
+        blankTextureIdField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("minecraft:particle/flash")))
+        blankTextureTintField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("#FFFFFF")))
         blankPickTextureButton = addRenderableWidget(StyledActionButton(0, 0, 36, fieldHeight, Component.literal("...")) {
             val e = blankEmitter()
             minecraft?.setScreen(
@@ -1259,11 +1725,43 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankFramesXField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("auto")))
         blankFramesYField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("auto")))
         blankFramesField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0,1,2,3")))
+        blankFrameTimeField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("100")))
+        blankItemIdField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("minecraft:item")))
+        blankPickItemButton = addRenderableWidget(StyledActionButton(0, 0, 36, fieldHeight, Component.literal("...")) {
+            minecraft?.setScreen(HudItemPickerScreen(this, blankEmitter().itemId) { itemId ->
+                mutateEmitter { it.copy(itemId = itemId, useTargetItem = false) }
+                blankItemIdField.setValue(itemId)
+                blankUseTargetItemButton.setLabel(Component.literal(blankUseTargetItemLabel()))
+            })
+        })
+        blankUseTargetItemButton = addRenderableWidget(
+            StyledActionButton(0, 0, 100, fieldHeight, Component.literal(blankUseTargetItemLabel())) { toggleBlankUseTargetItem() }
+        )
+        blankOriginXField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("hud_center_x")))
+        blankOriginYField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("hud_center_y")))
+        blankTextContentField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("GO\\nFIND\\nWIN")))
+        blankTextColorField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("#FFFFFF")))
+        blankTextSizeField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("1")))
+        blankTextShadowButton = addRenderableWidget(
+            StyledActionButton(0, 0, 100, fieldHeight, Component.literal(blankTextShadowLabel())) { toggleBlankTextShadow() }
+        )
+        blankTextShadowColorField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("#202020")))
+        blankPositionXField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0.0")))
+        blankPositionYField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0.0")))
+        blankRotationField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("0.0")))
+        blankScaleField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("1.0")))
+        blankAlphaField = addRenderableWidget(StyledEditField(font, 0, 0, 100, fieldHeight, Component.literal("1.0")))
+        blankColorField.palettePreview = true
+        blankTextureTintField.palettePreview = true
+        blankTextColorField.palettePreview = true
+        blankTextShadowColorField.palettePreview = true
 
         blankCountField.setValue(blankEmitter().countExpression.takeIf { it.isNotBlank() } ?: "")
         blankRateField.setValue(blankEmitter().spawnPeriodExpression.takeIf { it.isNotBlank() } ?: "")
         blankLifetimeField.setValue(normalizedBlankLifetimeText())
-        blankColorField.setValue(blankEmitter().colorPalette.firstOrNull().takeIf { !it.isNullOrBlank() } ?: "#FFFFFF")
+        blankOriginXField.setValue(blankEmitter().originXExpression.takeIf { it.isNotBlank() } ?: blankEmitter().originX.toString())
+        blankOriginYField.setValue(blankEmitter().originYExpression.takeIf { it.isNotBlank() } ?: blankEmitter().originY.toString())
+        blankColorField.setValue(blankEmitter().colorPalette.joinToString(",").ifBlank { "#FFFFFF" })
         blankTextureIdField.setValue(blankEmitter().textureId)
         blankUvXField.setValue(blankEmitter().textureUvXExpression.takeIf { it.isNotBlank() && it != "var" } ?: blankEmitter().textureUvX.toString())
         blankUvYField.setValue(blankEmitter().textureUvYExpression.takeIf { it.isNotBlank() && it != "var" } ?: blankEmitter().textureUvY.toString())
@@ -1272,18 +1770,53 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankFramesXField.setValue(blankEmitter().textureFramesXExpression.takeIf { it.isNotBlank() } ?: "")
         blankFramesYField.setValue(blankEmitter().textureFramesYExpression.takeIf { it.isNotBlank() } ?: "")
         blankFramesField.setValue(blankEmitter().textureFrameOrder)
+        blankFrameTimeField.setValue(blankEmitter().textureFrameTimeMsExpression.takeIf { it.isNotBlank() } ?: "")
+        blankTextureTintField.setValue(blankEmitter().textureTintColor)
+        blankItemIdField.setValue(blankEmitter().itemId)
+        blankTextContentField.setValue(blankEmitter().textContent)
+        blankTextColorField.setValue(blankEmitter().textColor)
+        blankTextSizeField.setValue(blankEmitter().textScaleExpression.takeIf { it.isNotBlank() } ?: blankEmitter().textScale.toString())
+        blankTextShadowColorField.setValue(blankEmitter().textShadowColor)
+        blankPositionXField.setValue(blankEmitter().positionXExpression.takeIf { it.isNotBlank() } ?: blankEmitter().positionX.toString())
+        blankPositionYField.setValue(blankEmitter().positionYExpression.takeIf { it.isNotBlank() } ?: blankEmitter().positionY.toString())
+        blankRotationField.setValue(blankEmitter().initialRotationExpression.takeIf { it.isNotBlank() } ?: blankEmitter().initialRotation.toString())
+        blankScaleField.setValue(blankEmitter().sizeExpression.takeIf { it.isNotBlank() } ?: blankEmitter().size.toString())
+        blankAlphaField.setValue(blankEmitter().alphaExpression.takeIf { it.isNotBlank() } ?: blankEmitter().alpha.toString())
+        blankColorField.setTextColor(previewTextColor(blankColorField.value))
+        blankTextureTintField.setTextColor(previewTextColor(blankTextureTintField.value))
+        blankTextColorField.setTextColor(previewTextColor(blankTextColorField.value))
+        blankTextShadowColorField.setTextColor(previewTextColor(blankTextShadowColorField.value))
 
         blankCountField.setResponder { raw ->
-            mutateEmitter { it.copy(countExpression = raw, count = raw.toIntOrNull()?.coerceAtLeast(0) ?: 0) }
+            mutateEmitter {
+                val expression = raw.trim()
+                val evaluated = if (expression.isBlank()) 0 else evaluateNumeric(expression, true).toInt().coerceAtLeast(0)
+                it.copy(countExpression = raw, count = evaluated)
+            }
         }
         blankRateField.setResponder { raw ->
-            mutateEmitter { it.copy(spawnPeriodExpression = raw, spawnPeriodMs = raw.toFloatOrNull()?.coerceAtLeast(0f) ?: 0f) }
+            mutateEmitter {
+                val expression = raw.trim()
+                val evaluated = if (expression.isBlank()) 0f else evaluateNumeric(expression, false).coerceAtLeast(0f)
+                it.copy(spawnPeriodExpression = raw, spawnPeriodMs = evaluated)
+            }
         }
         blankLifetimeField.setResponder { raw ->
-            mutateEmitter { it.copy(lifetimeExpression = raw, lifetimeTicks = raw.toIntOrNull()?.coerceAtLeast(0) ?: 0) }
+            mutateEmitter {
+                val expression = raw.trim()
+                val evaluated = if (expression.isBlank()) 0 else evaluateNumeric(expression, true).toInt().coerceAtLeast(0)
+                it.copy(lifetimeExpression = raw, lifetimeTicks = evaluated)
+            }
+        }
+        blankOriginXField.setResponder { raw ->
+            mutateEmitter { it.copy(originXExpression = raw.trim(), originX = raw.toFloatOrNull() ?: 0f) }
+        }
+        blankOriginYField.setResponder { raw ->
+            mutateEmitter { it.copy(originYExpression = raw.trim(), originY = raw.toFloatOrNull() ?: 0f) }
         }
         blankColorField.setResponder { raw ->
-            mutateEmitter { it.copy(colorPalette = listOf(raw.ifBlank { "#FFFFFF" })) }
+            mutateEmitter { it.copy(colorPalette = parseColorList(raw).ifEmpty { listOf("#FFFFFF") }) }
+            blankColorField.setTextColor(previewTextColor(raw))
         }
         blankTextureIdField.setResponder { raw ->
             mutateEmitter { it.copy(textureId = raw.ifBlank { "missingno" }) }
@@ -1309,11 +1842,53 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankFramesField.setResponder { raw ->
             mutateEmitter { it.copy(textureFrameOrder = raw) }
         }
+        blankFrameTimeField.setResponder { raw ->
+            mutateEmitter { it.copy(textureFrameTimeMsExpression = raw, textureFrameTimeMs = raw.toFloatOrNull()?.coerceAtLeast(0f) ?: 0f) }
+        }
+        blankTextureTintField.setResponder { raw ->
+            mutateEmitter { it.copy(textureTintColor = raw.ifBlank { "#FFFFFF" }) }
+            blankTextureTintField.setTextColor(previewTextColor(raw))
+        }
+        blankItemIdField.setResponder { raw ->
+            mutateEmitter { it.copy(itemId = raw.ifBlank { "minecraft:barrier" }) }
+        }
+        blankTextContentField.setResponder { raw ->
+            mutateEmitter { it.copy(textContent = raw) }
+        }
+        blankTextColorField.setResponder { raw ->
+            mutateEmitter { it.copy(textColor = raw.ifBlank { "#FFFFFF" }) }
+            blankTextColorField.setTextColor(previewTextColor(raw))
+        }
+        blankTextSizeField.setResponder { raw ->
+            mutateEmitter { it.copy(textScaleExpression = raw, textScale = raw.toFloatOrNull()?.coerceAtLeast(0f) ?: 0f) }
+        }
+        blankTextShadowColorField.setResponder { raw ->
+            mutateEmitter { it.copy(textShadowColor = raw.ifBlank { "#202020" }) }
+            blankTextShadowColorField.setTextColor(previewTextColor(raw))
+        }
+        blankPositionXField.setResponder { raw ->
+            mutateEmitter { it.copy(positionXExpression = raw.trim(), positionX = raw.toFloatOrNull() ?: 0f) }
+        }
+        blankPositionYField.setResponder { raw ->
+            mutateEmitter { it.copy(positionYExpression = raw.trim(), positionY = raw.toFloatOrNull() ?: 0f) }
+        }
+        blankRotationField.setResponder { raw ->
+            mutateEmitter { it.copy(initialRotationExpression = raw.trim(), initialRotation = raw.toFloatOrNull() ?: 0f) }
+        }
+        blankScaleField.setResponder { raw ->
+            mutateEmitter { it.copy(sizeExpression = raw.trim(), size = raw.toFloatOrNull() ?: 1f) }
+        }
+        blankAlphaField.setResponder { raw ->
+            mutateEmitter { it.copy(alphaExpression = raw.trim(), alpha = raw.toFloatOrNull()?.coerceIn(0f, 1f) ?: 1f) }
+        }
         blankOverlayField = addRenderableWidget(OverlayTextArea(font, 0, 0, 100, 180))
         blankOverlayField.visible = false
         blankOverlayField.active = false
         blankOverlayField.setMaxLength(4096)
-        blankOverlayField.setResponder { value -> blankOverlayTarget?.setValue(value) }
+        blankOverlayField.setResponder { value ->
+            blankOverlayTarget?.setValue(value)
+            queuePreview(forceNow = true)
+        }
 
         layoutBlankWidgets()
         refreshBlankGeneralVisibility()
@@ -1341,7 +1916,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private fun blankContentRect(layout: BlankLayout): Rect {
         val top = layout.props.top + scaledBodyInnerMargin + font.lineHeight + 10
-        val bottom = layout.props.bottom - scaledBodyInnerMargin
+        val bottom = layout.props.bottom - scaledBodyInnerMargin - max(24, fieldHeight + 8)
         val right = layout.props.right - scaledBodyInnerMargin - scrollbarWidth - 8
         return Rect(layout.props.left + 1, top, (right - layout.props.left - 1).coerceAtLeast(1), (bottom - top).coerceAtLeast(1))
     }
@@ -1355,6 +1930,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         val row1 = layout.rowY(sectionTop, 1)
         val row2 = layout.rowY(sectionTop, 2)
         val row3 = layout.rowY(sectionTop, 3)
+        val row4 = layout.rowY(sectionTop, 4)
         val columnGap = 8
         val pairWidth = ((layout.controlWidth - columnGap) / 2).coerceAtLeast(64)
         val secondX = layout.controlX + pairWidth + columnGap
@@ -1363,11 +1939,15 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankCategoryButton.setWidth(layout.controlWidth)
         blankSpawnModeButton.setPosition(layout.controlX, row1 - 2)
         blankSpawnModeButton.setWidth(layout.controlWidth)
-        blankCountField.setPosition(layout.controlX, row2 - 2)
+        blankOriginXField.setPosition(layout.controlX, row2 - 2)
+        blankOriginXField.setWidth(pairWidth)
+        blankOriginYField.setPosition(secondX, row2 - 2)
+        blankOriginYField.setWidth(pairWidth)
+        blankCountField.setPosition(layout.controlX, row3 - 2)
         blankCountField.setWidth(layout.controlWidth)
-        blankRateField.setPosition(layout.controlX, row2 - 2)
+        blankRateField.setPosition(layout.controlX, row3 - 2)
         blankRateField.setWidth(layout.controlWidth)
-        blankLifetimeField.setPosition(layout.controlX, row3 - 2)
+        blankLifetimeField.setPosition(layout.controlX, row4 - 2)
         blankLifetimeField.setWidth(layout.controlWidth)
 
         var visualRow = blankSectionRowY(visualTop, 0)
@@ -1380,22 +1960,26 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                 blankColorField.setWidth(layout.controlWidth)
             }
             HudCelebrationRenderType.TEXTURE -> {
-                blankUvXField.setPosition(layout.controlX, visualRow - 2)
-                blankUvXField.setWidth(pairWidth)
-                blankUvYField.setPosition(secondX, visualRow - 2)
-                blankUvYField.setWidth(pairWidth)
-                visualRow = blankSectionRowY(visualTop, 2)
-                blankUvWidthField.setPosition(layout.controlX, visualRow - 2)
-                blankUvWidthField.setWidth(pairWidth)
-                blankUvHeightField.setPosition(secondX, visualRow - 2)
-                blankUvHeightField.setWidth(pairWidth)
-                visualRow = blankSectionRowY(visualTop, 3)
-                blankTextureModeButton.setPosition(layout.controlX, visualRow - 2)
-                blankTextureModeButton.setWidth(layout.controlWidth)
-                visualRow = blankSectionRowY(visualTop, 4)
                 blankTextureIdField.setPosition(layout.controlX, visualRow - 2)
                 blankTextureIdField.setWidth(layout.controlWidth - 44)
                 blankPickTextureButton.setPosition(layout.controlX + layout.controlWidth - 36, visualRow - 2)
+                visualRow = blankSectionRowY(visualTop, 2)
+                blankTextureTintField.setPosition(layout.controlX, visualRow - 2)
+                blankTextureTintField.setWidth(layout.controlWidth)
+                visualRow = blankSectionRowY(visualTop, 3)
+                val quadGap = 8
+                val quadWidth = ((layout.controlWidth - quadGap * 3) / 4).coerceAtLeast(44)
+                blankUvXField.setPosition(layout.controlX, visualRow - 2)
+                blankUvXField.setWidth(quadWidth)
+                blankUvYField.setPosition(layout.controlX + quadWidth + quadGap, visualRow - 2)
+                blankUvYField.setWidth(quadWidth)
+                blankUvWidthField.setPosition(layout.controlX + (quadWidth + quadGap) * 2, visualRow - 2)
+                blankUvWidthField.setWidth(quadWidth)
+                blankUvHeightField.setPosition(layout.controlX + (quadWidth + quadGap) * 3, visualRow - 2)
+                blankUvHeightField.setWidth(quadWidth)
+                visualRow = blankSectionRowY(visualTop, 4)
+                blankTextureModeButton.setPosition(layout.controlX, visualRow - 2)
+                blankTextureModeButton.setWidth(layout.controlWidth)
                 when (blankEmitter().textureMode) {
                     HudCelebrationTextureMode.SHEET -> {
                         visualRow = blankSectionRowY(visualTop, 5)
@@ -1407,6 +1991,11 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                         blankFramesField.setPosition(layout.controlX, visualRow - 2)
                         blankFramesField.setWidth(layout.controlWidth)
                         visualRow = blankSectionRowY(visualTop, 7)
+                        val miniPreviewWidth = max(fieldHeight + 2, 28)
+                        val miniPreviewGap = 10
+                        blankFrameTimeField.setPosition(layout.controlX, visualRow - 2)
+                        blankFrameTimeField.setWidth((layout.controlWidth - miniPreviewWidth - miniPreviewGap).coerceAtLeast(96))
+                        visualRow = blankSectionRowY(visualTop, 8)
                         blankTextureInterpolateButton.setPosition(layout.controlX, visualRow - 2)
                         blankTextureInterpolateButton.setWidth(layout.controlWidth)
                     }
@@ -1415,30 +2004,104 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                         blankFramesField.setPosition(layout.controlX, visualRow - 2)
                         blankFramesField.setWidth(layout.controlWidth)
                         visualRow = blankSectionRowY(visualTop, 6)
+                        val miniPreviewWidth = max(fieldHeight + 2, 28)
+                        val miniPreviewGap = 10
+                        blankFrameTimeField.setPosition(layout.controlX, visualRow - 2)
+                        blankFrameTimeField.setWidth((layout.controlWidth - miniPreviewWidth - miniPreviewGap).coerceAtLeast(96))
+                        visualRow = blankSectionRowY(visualTop, 7)
                         blankTextureInterpolateButton.setPosition(layout.controlX, visualRow - 2)
                         blankTextureInterpolateButton.setWidth(layout.controlWidth)
                     }
                     HudCelebrationTextureMode.SINGLE -> Unit
                 }
             }
+            HudCelebrationRenderType.ITEMSTACK -> {
+                blankItemIdField.setPosition(layout.controlX, visualRow - 2)
+                blankItemIdField.setWidth(layout.controlWidth - 44)
+                blankPickItemButton.setPosition(layout.controlX + layout.controlWidth - 36, visualRow - 2)
+                visualRow = blankSectionRowY(visualTop, 2)
+                blankUseTargetItemButton.setPosition(layout.controlX, visualRow - 2)
+                blankUseTargetItemButton.setWidth(layout.controlWidth)
+            }
+            HudCelebrationRenderType.TEXT -> {
+                blankTextContentField.setPosition(layout.controlX, visualRow - 2)
+                blankTextContentField.setWidth(layout.controlWidth)
+                visualRow = blankSectionRowY(visualTop, 2)
+                blankTextColorField.setPosition(layout.controlX, visualRow - 2)
+                blankTextColorField.setWidth(pairWidth)
+                blankTextSizeField.setPosition(secondX, visualRow - 2)
+                blankTextSizeField.setWidth(pairWidth)
+                visualRow = blankSectionRowY(visualTop, 3)
+                blankTextShadowButton.setPosition(layout.controlX, visualRow - 2)
+                blankTextShadowButton.setWidth(pairWidth)
+                blankTextShadowColorField.setPosition(secondX, visualRow - 2)
+                blankTextShadowColorField.setWidth(pairWidth)
+            }
             else -> Unit
         }
+        val controlTop = blankControlSectionTop(layout)
+        val controlRow0 = blankSectionRowY(controlTop, 0)
+        val controlRow1 = blankSectionRowY(controlTop, 1)
+        val controlRow2 = blankSectionRowY(controlTop, 2)
+        val controlRow3 = blankSectionRowY(controlTop, 3)
+        blankPositionXField.setPosition(layout.controlX, controlRow0 - 2)
+        blankPositionXField.setWidth(pairWidth)
+        blankPositionYField.setPosition(secondX, controlRow0 - 2)
+        blankPositionYField.setWidth(pairWidth)
+        blankRotationField.setPosition(layout.controlX, controlRow1 - 2)
+        blankRotationField.setWidth(layout.controlWidth)
+        blankScaleField.setPosition(layout.controlX, controlRow2 - 2)
+        blankScaleField.setWidth(layout.controlWidth)
+        blankAlphaField.setPosition(layout.controlX, controlRow3 - 2)
+        blankAlphaField.setWidth(layout.controlWidth)
         refreshBlankVisualVisibility()
     }
 
     private fun blankContentBottom(layout: BlankLayout): Int {
-        val visualTop = blankVisualSectionTop(layout)
-        val visualRows = when (blankEmitter().renderType) {
-            HudCelebrationRenderType.PARTICLE -> 2
-            HudCelebrationRenderType.TEXTURE -> when (blankEmitter().textureMode) {
-                HudCelebrationTextureMode.SINGLE -> 5
-                HudCelebrationTextureMode.SHEET -> 8
-                HudCelebrationTextureMode.SEQUENCE -> 7
-            }
-            else -> 2
-        }
-        return blankSectionRowY(visualTop, visualRows - 1) + fieldHeight + scaledBodyInnerMargin
+        val visibleBottom = blankInteractiveWidgets()
+            .filter { it.visible }
+            .maxOfOrNull { it.y + it.height - blankScrollOffset }
+            ?: blankContentRect(layout).top
+        return visibleBottom + scaledBodyInnerMargin + max(120, fieldHeight + 56)
     }
+
+    private fun blankInteractiveWidgets(): List<AbstractWidget> = listOf(
+        blankCategoryButton,
+        blankSpawnModeButton,
+        blankRenderTypeButton,
+        blankTextureModeButton,
+        blankTextureInterpolateButton,
+        blankCountField,
+        blankRateField,
+        blankLifetimeField,
+        blankOriginXField,
+        blankOriginYField,
+        blankColorField,
+        blankTextureIdField,
+        blankPickTextureButton,
+        blankUvXField,
+        blankUvYField,
+        blankUvWidthField,
+        blankUvHeightField,
+        blankTextureTintField,
+        blankFramesXField,
+        blankFramesYField,
+        blankFramesField,
+        blankFrameTimeField,
+        blankItemIdField,
+        blankPickItemButton,
+        blankUseTargetItemButton,
+        blankTextContentField,
+        blankTextColorField,
+        blankTextSizeField,
+        blankTextShadowButton,
+        blankTextShadowColorField,
+        blankPositionXField,
+        blankPositionYField,
+        blankRotationField,
+        blankScaleField,
+        blankAlphaField
+    )
 
     private fun blankMinScrollOffset(layout: BlankLayout): Int {
         val overflow = blankContentBottom(layout) - blankContentRect(layout).bottom
@@ -1481,6 +2144,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private fun renderBlankProps(guiGraphics: GuiGraphics, layout: BlankLayout, mouseX: Int, mouseY: Int) {
         blankTooltipTargets.clear()
+        blankMiniPreviewRect = null
         val top = blankContentRect(layout).top + blankScrollOffset
         val sectionTop = top + font.lineHeight + 10
         val lineLeft = layout.labelX + font.width("General") + 8
@@ -1491,14 +2155,15 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
         renderBlankLabel(guiGraphics, "Тип эмитора", layout.labelX, layout.rowY(sectionTop, 0) + 6, "emitter_type")
         renderBlankLabel(guiGraphics, "Режим спавна частиц", layout.labelX, layout.rowY(sectionTop, 1) + 6, "spawn_mode")
+        renderBlankLabel(guiGraphics, "Origin", layout.labelX, layout.rowY(sectionTop, 2) + 6, "origin")
         renderBlankLabel(
             guiGraphics,
             if (blankEmitter().spawnMode == HudCelebrationSpawnMode.SINGLE) "Кол-во частиц" else "Частиц в мин",
             layout.labelX,
-            layout.rowY(sectionTop, 2) + 6,
+            layout.rowY(sectionTop, 3) + 6,
             "spawn_amount"
         )
-        renderBlankLabel(guiGraphics, "Время жизни частицы", layout.labelX, layout.rowY(sectionTop, 3) + 6, "lifetime")
+        renderBlankLabel(guiGraphics, "Время жизни частицы", layout.labelX, layout.rowY(sectionTop, 4) + 6, "lifetime")
         val visualTop = blankVisualSectionTop(layout)
         val visualLineLeft = layout.labelX + font.width("Visual") + 8
         guiGraphics.drawString(font, "Visual", layout.labelX, visualTop, 0xFFFFE28A.toInt())
@@ -1509,35 +2174,285 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
                 renderBlankLabel(guiGraphics, "Color", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_color")
             }
             HudCelebrationRenderType.TEXTURE -> {
-                renderBlankLabel(guiGraphics, "UV X / Y", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_uv_xy")
-                renderBlankLabel(guiGraphics, "UV W / H", layout.labelX, blankSectionRowY(visualTop, 2) + 6, "visual_uv_wh")
-                renderBlankLabel(guiGraphics, "Mode", layout.labelX, blankSectionRowY(visualTop, 3) + 6, "visual_texture_mode")
-                renderBlankLabel(guiGraphics, "Texture ID", layout.labelX, blankSectionRowY(visualTop, 4) + 6, "visual_texture_id")
+                renderBlankLabel(guiGraphics, "Texture ID", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_texture_id")
+                renderBlankLabel(guiGraphics, "Multiply color", layout.labelX, blankSectionRowY(visualTop, 2) + 6, "visual_texture_tint")
+                renderBlankLabel(guiGraphics, "UV", layout.labelX, blankSectionRowY(visualTop, 3) + 6, "visual_uv")
+                renderBlankLabel(guiGraphics, "Mode", layout.labelX, blankSectionRowY(visualTop, 4) + 6, "visual_texture_mode")
                 when (blankEmitter().textureMode) {
                     HudCelebrationTextureMode.SHEET -> {
                         renderBlankLabel(guiGraphics, "Frames X / Y", layout.labelX, blankSectionRowY(visualTop, 5) + 6, "visual_frames_xy")
                         renderBlankLabel(guiGraphics, "Frames", layout.labelX, blankSectionRowY(visualTop, 6) + 6, "visual_frames")
-                        renderBlankLabel(guiGraphics, "Interpolate", layout.labelX, blankSectionRowY(visualTop, 7) + 6, "visual_interpolate")
+                        renderBlankLabel(guiGraphics, "Frame time ms", layout.labelX, blankSectionRowY(visualTop, 7) + 6, "visual_frame_time")
+                        renderBlankLabel(guiGraphics, "Interpolate / Random", layout.labelX, blankSectionRowY(visualTop, 8) + 6, "visual_interpolate")
+                        blankMiniPreviewRect = renderBlankTextureMiniPreview(guiGraphics, layout, blankSectionRowY(visualTop, 7) - 2)
                     }
                     HudCelebrationTextureMode.SEQUENCE -> {
                         renderBlankLabel(guiGraphics, "Frames", layout.labelX, blankSectionRowY(visualTop, 5) + 6, "visual_frames")
-                        renderBlankLabel(guiGraphics, "Interpolate", layout.labelX, blankSectionRowY(visualTop, 6) + 6, "visual_interpolate")
+                        renderBlankLabel(guiGraphics, "Frame time ms", layout.labelX, blankSectionRowY(visualTop, 6) + 6, "visual_frame_time")
+                        renderBlankLabel(guiGraphics, "Interpolate / Random", layout.labelX, blankSectionRowY(visualTop, 7) + 6, "visual_interpolate")
+                        blankMiniPreviewRect = renderBlankTextureMiniPreview(guiGraphics, layout, blankSectionRowY(visualTop, 6) - 2)
                     }
                     HudCelebrationTextureMode.SINGLE -> Unit
                 }
             }
             HudCelebrationRenderType.ITEMSTACK -> {
-                renderBlankLabel(guiGraphics, "Type settings soon", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_stub")
+                renderBlankLabel(guiGraphics, "Item ID", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_item_id")
+                renderBlankLabel(guiGraphics, "Use target item", layout.labelX, blankSectionRowY(visualTop, 2) + 6, "visual_use_target_item")
             }
             HudCelebrationRenderType.TEXT -> {
-                renderBlankLabel(guiGraphics, "Type settings soon", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_stub")
+                renderBlankLabel(guiGraphics, "Text", layout.labelX, blankSectionRowY(visualTop, 1) + 6, "visual_text_content")
+                renderBlankLabel(guiGraphics, "Text color / Size", layout.labelX, blankSectionRowY(visualTop, 2) + 6, "visual_text_style")
+                renderBlankLabel(guiGraphics, "Shadow / Shadow color", layout.labelX, blankSectionRowY(visualTop, 3) + 6, "visual_text_shadow")
             }
             else -> Unit
         }
+        val controlTop = blankControlSectionTop(layout)
+        val controlLineLeft = layout.labelX + font.width("Control") + 8
+        guiGraphics.drawString(font, "Control", layout.labelX, controlTop, 0xFFFFE28A.toInt())
+        if (lineRight > controlLineLeft) guiGraphics.fill(controlLineLeft, controlTop + 5, lineRight, controlTop + 6, 0x55D8E0EA)
+        renderBlankLabel(guiGraphics, "Position", layout.labelX, blankSectionRowY(controlTop, 0) + 6, "control_position")
+        renderBlankLabel(guiGraphics, "Rotation", layout.labelX, blankSectionRowY(controlTop, 1) + 6, "control_rotation")
+        renderBlankLabel(guiGraphics, "Scale", layout.labelX, blankSectionRowY(controlTop, 2) + 6, "control_scale")
+        renderBlankLabel(guiGraphics, "Alpha", layout.labelX, blankSectionRowY(controlTop, 3) + 6, "control_alpha")
 
+        val fieldError = blankHoveredFieldError(mouseX.toDouble(), mouseY.toDouble())
         val hoveredTooltip = blankTooltipTargets.entries.firstOrNull { it.value.contains(mouseX.toDouble(), mouseY.toDouble()) }?.key
-        if (hoveredTooltip != null) {
-            renderBlankTooltip(guiGraphics, mouseX + 12, mouseY + 12, blankTooltipText(hoveredTooltip))
+        blankPendingTooltipText = when {
+            fieldError != null -> fieldError
+            hoveredTooltip != null -> blankTooltipText(hoveredTooltip)
+            else -> null
+        }
+        blankPendingTooltipX = mouseX + 12
+        blankPendingTooltipY = mouseY + 12
+    }
+
+    private fun renderBlankTextureMiniPreview(guiGraphics: GuiGraphics, layout: BlankLayout, rowTop: Int): Rect? {
+        val emitter = blankEmitter()
+        val totalFrames = blankTextureFrameSequence(emitter).size.coerceAtLeast(1)
+        val frameTimeMs = emitter.textureFrameTimeMsExpression.toFloatOrNull()?.coerceAtLeast(10f)
+            ?: emitter.textureFrameTimeMs.coerceAtLeast(10f)
+        val stepFloat = ((System.currentTimeMillis() % 1_000_000L).toFloat() / frameTimeMs).coerceAtLeast(0f)
+        val stepBase = stepFloat.toInt()
+        val currentFrame = resolveBlankTexturePreviewFrame(stepBase) ?: return null
+        val nextFrame = if (emitter.textureInterpolate && totalFrames > 1) resolveBlankTexturePreviewFrame(stepBase + 1) else null
+        val interpolation = if (emitter.textureInterpolate) (stepFloat - stepBase).coerceIn(0f, 1f) else 0f
+        val previewSize = max(fieldHeight + 2, 28)
+        val previewRect = Rect(
+            layout.controlX + layout.controlWidth - previewSize,
+            rowTop + (fieldHeight - previewSize) / 2,
+            previewSize,
+            previewSize
+        )
+        guiGraphics.fill(previewRect.left, previewRect.top, previewRect.right, previewRect.bottom, 0x180E1117)
+        drawOutline(guiGraphics, previewRect, 0x44FFFFFF)
+
+        val progress = ((System.currentTimeMillis() % 1000L) / 1000f).coerceIn(0f, 1f)
+        val tint = previewTextColor(blankTextureTintField.value)
+        val argb = (0xFF shl 24) or (tint and 0x00FFFFFF)
+        val drawSize = (previewRect.height - 8).coerceAtLeast(12)
+        val drawX = previewRect.left + (previewRect.width - drawSize) / 2
+        val drawY = previewRect.top + (previewRect.height - drawSize) / 2
+        renderBlankTextureMiniFrame(guiGraphics, currentFrame, drawX, drawY, drawSize, argb, 1f - interpolation)
+        if (nextFrame != null && interpolation > 0.001f) {
+            renderBlankTextureMiniFrame(guiGraphics, nextFrame, drawX, drawY, drawSize, argb, interpolation)
+        }
+        return previewRect
+    }
+
+    private fun renderBlankTextureMiniTooltip(guiGraphics: GuiGraphics, x: Int, y: Int) {
+        val emitter = blankEmitter()
+        val totalFrames = blankTextureFrameSequence(emitter).size.coerceAtLeast(1)
+        val frameTimeMs = emitter.textureFrameTimeMsExpression.toFloatOrNull()?.coerceAtLeast(10f)
+            ?: emitter.textureFrameTimeMs.coerceAtLeast(10f)
+        val stepFloat = ((System.currentTimeMillis() % 1_000_000L).toFloat() / frameTimeMs).coerceAtLeast(0f)
+        val stepBase = stepFloat.toInt()
+        val currentFrame = resolveBlankTexturePreviewFrame(stepBase) ?: return
+        val nextFrame = if (emitter.textureInterpolate && totalFrames > 1) resolveBlankTexturePreviewFrame(stepBase + 1) else null
+        val interpolation = if (emitter.textureInterpolate) (stepFloat - stepBase).coerceIn(0f, 1f) else 0f
+        val rect = Rect(x, y, 76, 76)
+        guiGraphics.fill(rect.left, rect.top, rect.right, rect.bottom, 0xD010141B.toInt())
+        drawOutline(guiGraphics, rect, 0x66FFFFFF)
+
+        val progress = ((System.currentTimeMillis() % 1000L) / 1000f).coerceIn(0f, 1f)
+        val tint = previewTextColor(blankTextureTintField.value)
+        val argb = (0xFF shl 24) or (tint and 0x00FFFFFF)
+        val drawSize = rect.height - 12
+        val drawX = rect.left + (rect.width - drawSize) / 2
+        val drawY = rect.top + (rect.height - drawSize) / 2
+        renderBlankTextureMiniFrame(guiGraphics, currentFrame, drawX, drawY, drawSize, argb, 1f - interpolation)
+        if (nextFrame != null && interpolation > 0.001f) {
+            renderBlankTextureMiniFrame(guiGraphics, nextFrame, drawX, drawY, drawSize, argb, interpolation)
+        }
+    }
+
+    private fun renderBlankTextureMiniFrame(
+        guiGraphics: GuiGraphics,
+        frame: BlankTexturePreviewFrame,
+        x: Int,
+        y: Int,
+        size: Int,
+        tint: Int,
+        alphaFactor: Float
+    ) {
+        val a = (((tint ushr 24) and 0xFF) * alphaFactor).toInt().coerceIn(0, 255)
+        val modulatedTint = (a shl 24) or (tint and 0x00FFFFFF)
+        guiGraphics.blit(
+            net.minecraft.client.renderer.RenderPipelines.GUI_TEXTURED,
+            frame.textureId,
+            x,
+            y,
+            frame.uvX.toFloat(),
+            frame.uvY.toFloat(),
+            size,
+            size,
+            frame.uvWidth,
+            frame.uvHeight,
+            frame.textureWidth,
+            frame.textureHeight,
+            modulatedTint
+        )
+    }
+
+    private fun blendPreviewColors(start: Int, end: Int, progress: Float): Int {
+        val p = progress.coerceIn(0f, 1f)
+        val sr = (start shr 16) and 0xFF
+        val sg = (start shr 8) and 0xFF
+        val sb = start and 0xFF
+        val er = (end shr 16) and 0xFF
+        val eg = (end shr 8) and 0xFF
+        val eb = end and 0xFF
+        val r = (sr + (er - sr) * p).toInt().coerceIn(0, 255)
+        val g = (sg + (eg - sg) * p).toInt().coerceIn(0, 255)
+        val b = (sb + (eb - sb) * p).toInt().coerceIn(0, 255)
+        return (r shl 16) or (g shl 8) or b
+    }
+
+    private fun resolveBlankTexturePreviewFrame(step: Int): BlankTexturePreviewFrame? {
+        val emitter = blankEmitter()
+        if (emitter.renderType != HudCelebrationRenderType.TEXTURE) return null
+        val frames = blankTextureFrameSequence(emitter)
+        val sequenceTokens = blankTextureFrameTokens(emitter)
+        val frameCount = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SEQUENCE -> sequenceTokens.size.coerceAtLeast(1)
+            else -> frames.size.coerceAtLeast(1)
+        }
+        val currentFrame = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SINGLE -> 0
+            HudCelebrationTextureMode.SHEET, HudCelebrationTextureMode.SEQUENCE -> {
+                step.wrapIndex(frameCount)
+            }
+        }
+        val textureId = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SEQUENCE -> resolveBlankSequenceTextureIdentifier(emitter.textureId, sequenceTokens.getOrElse(currentFrame) { "0" })
+                ?: resolveBlankSequenceTextureIdentifier(emitter.textureId, "0")
+                ?: resolveBlankTextureIdentifier(emitter.textureId)
+            else -> resolveBlankTextureIdentifier(emitter.textureId)
+        } ?: return null
+        val textureSize = resolveBlankTextureSize(textureId) ?: return null
+        val uvX = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SHEET -> {
+                val frameValue = frames.getOrElse(currentFrame) { 0 }
+                emitter.textureUvX + (frameValue % emitter.textureFramesX.coerceAtLeast(1)) * emitter.textureUvWidth
+            }
+            else -> emitter.textureUvX
+        }
+        val uvY = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SHEET -> {
+                val frameValue = frames.getOrElse(currentFrame) { 0 }
+                emitter.textureUvY + (frameValue / emitter.textureFramesX.coerceAtLeast(1)) * emitter.textureUvHeight
+            }
+            else -> emitter.textureUvY
+        }
+        return BlankTexturePreviewFrame(
+            textureId = textureId,
+            uvX = uvX,
+            uvY = uvY,
+            uvWidth = emitter.textureUvWidth.coerceAtLeast(1),
+            uvHeight = emitter.textureUvHeight.coerceAtLeast(1),
+            textureWidth = textureSize.first,
+            textureHeight = textureSize.second
+        )
+    }
+
+    private fun blankTextureFrameSequence(emitter: HudCelebrationEmitterConfig): List<Int> {
+        val fallbackCount = when (emitter.textureMode) {
+            HudCelebrationTextureMode.SINGLE -> 1
+            HudCelebrationTextureMode.SHEET -> (emitter.textureFramesX.coerceAtLeast(1) * emitter.textureFramesY.coerceAtLeast(1)).coerceAtLeast(1)
+            HudCelebrationTextureMode.SEQUENCE -> max(1, expandBlankFrameTokens(emitter.textureFrameOrder).size)
+        }
+        val custom = expandBlankFrameOrder(emitter.textureFrameOrder)
+        return if (custom.isEmpty()) (0 until fallbackCount).toList() else custom
+    }
+
+    private fun blankTextureFrameTokens(emitter: HudCelebrationEmitterConfig): List<String> {
+        val custom = expandBlankFrameTokens(emitter.textureFrameOrder)
+        return if (custom.isEmpty()) listOf("0") else custom
+    }
+
+    private fun expandBlankFrameOrder(raw: String): List<Int> =
+        raw.split(',', ';', ' ', '\n', '\r', '\t')
+            .flatMap { token ->
+                val trimmed = token.trim()
+                when {
+                    trimmed.isEmpty() -> emptyList()
+                    ".." in trimmed -> {
+                        val parts = trimmed.split("..", limit = 2)
+                        val from = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                        val to = parts.getOrNull(1)?.trim()?.toIntOrNull()
+                        if (from == null || to == null) emptyList()
+                        else if (from <= to) (from..to).toList()
+                        else (from downTo to).toList()
+                    }
+                    else -> trimmed.toIntOrNull()?.let(::listOf) ?: emptyList()
+                }
+            }
+
+    private fun expandBlankFrameTokens(raw: String): List<String> =
+        raw.split(',', ';', ' ', '\n', '\r', '\t')
+            .flatMap { token ->
+                val trimmed = token.trim()
+                when {
+                    trimmed.isEmpty() -> emptyList()
+                    ".." in trimmed -> {
+                        val parts = trimmed.split("..", limit = 2)
+                        val from = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                        val to = parts.getOrNull(1)?.trim()?.toIntOrNull()
+                        if (from == null || to == null) listOf(trimmed)
+                        else if (from <= to) (from..to).map(Int::toString)
+                        else (from downTo to).map(Int::toString)
+                    }
+                    else -> listOf(trimmed)
+                }
+            }
+
+    private fun resolveBlankTextureIdentifier(textureId: String): Identifier? {
+        val parsed = Identifier.tryParse(textureId) ?: return null
+        return if (parsed.path.startsWith("textures/") || parsed.path.endsWith(".png")) {
+            parsed
+        } else {
+            Identifier.fromNamespaceAndPath(parsed.namespace, "textures/${parsed.path}.png")
+        }
+    }
+
+    private fun resolveBlankSequenceTextureIdentifier(pattern: String, frameToken: String): Identifier? {
+        val candidates = buildList {
+            if (pattern.contains("%d")) {
+                add(pattern.replace("%d", frameToken))
+            } else {
+                add(pattern)
+            }
+        }
+        return candidates.firstNotNullOfOrNull { candidate ->
+            resolveBlankTextureIdentifier(candidate)?.takeIf { resolveBlankTextureSize(it) != null }
+        }
+    }
+
+    private fun resolveBlankTextureSize(textureId: Identifier): Pair<Int, Int>? {
+        val resource = minecraft?.resourceManager?.getResource(textureId)?.orElse(null) ?: return null
+        return resource.open().use { stream ->
+            com.mojang.blaze3d.platform.NativeImage.read(stream).use { image ->
+                image.width to image.height
+            }
         }
     }
 
@@ -1562,30 +2477,79 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         val body = bodyRect()
         val inset = max(28, scaledBodyInnerMargin * 2)
         val overlay = body.inset(inset)
+        blankOverlayRect = overlay
         val titleX = overlay.left + scaledBodyInnerMargin
         val titleY = overlay.top + scaledBodyInnerMargin
         val contentTop = titleY + font.lineHeight + 12
-        val leftWidth = (overlay.width * 0.24f).toInt().coerceIn(120, 220)
         val gap = scaledPanelGap
+        val leftWidth = (overlay.width * blankOverlaySplitRatio).toInt().coerceIn(110, overlay.width / 2)
 
-        blankOverlayLeftRect = Rect(overlay.left + scaledBodyInnerMargin, contentTop, leftWidth, overlay.bottom - contentTop - scaledBodyInnerMargin)
+        val leftHeight = overlay.bottom - contentTop - scaledBodyInnerMargin
+        val previewHeight = (leftHeight * blankOverlayPreviewRatio).toInt().coerceIn(110, leftHeight - 90)
+        blankOverlayLeftRect = Rect(overlay.left + scaledBodyInnerMargin, contentTop, leftWidth, (leftHeight - previewHeight - gap).coerceAtLeast(80))
+        blankOverlayPreviewRect = Rect(blankOverlayLeftRect.left, blankOverlayLeftRect.bottom + gap, leftWidth, previewHeight)
         val rightLeft = blankOverlayLeftRect.right + gap
         blankOverlayRightRect = Rect(rightLeft, contentTop, overlay.right - rightLeft - scaledBodyInnerMargin, overlay.bottom - contentTop - scaledBodyInnerMargin)
 
         guiGraphics.fill(body.left, body.top, body.right, body.bottom, 0xAA000000.toInt())
         guiGraphics.fill(overlay.left, overlay.top, overlay.right, overlay.bottom, 0xE010141B.toInt())
         drawOutline(guiGraphics, overlay, 0x66FFFFFF)
-        guiGraphics.drawString(font, "GoFindWin settings > effects > edit variable", titleX, titleY, 0xFFFFFFFF.toInt())
+        guiGraphics.drawString(font, "GoFindWin settings > effects > edit variable > $blankOverlayTitle", titleX, titleY, 0xFFFFFFFF.toInt())
 
         guiGraphics.fill(blankOverlayLeftRect.left, blankOverlayLeftRect.top, blankOverlayLeftRect.right, blankOverlayLeftRect.bottom, 0x1AFFFFFF)
+        guiGraphics.fill(blankOverlayPreviewRect.left, blankOverlayPreviewRect.top, blankOverlayPreviewRect.right, blankOverlayPreviewRect.bottom, 0x1AFFFFFF)
         guiGraphics.fill(blankOverlayRightRect.left, blankOverlayRightRect.top, blankOverlayRightRect.right, blankOverlayRightRect.bottom, 0x1AFFFFFF)
         drawOutline(guiGraphics, blankOverlayLeftRect, 0x40FFFFFF)
+        drawOutline(guiGraphics, blankOverlayPreviewRect, 0x40FFFFFF)
         drawOutline(guiGraphics, blankOverlayRightRect, 0x40FFFFFF)
+        val splitHandle = blankOverlaySplitHandleRect()
+        val columnHandle = blankOverlayColumnHandleRect()
+        guiGraphics.fill(
+            splitHandle.left,
+            splitHandle.top,
+            splitHandle.right,
+            splitHandle.bottom,
+            when {
+                draggingBlankOverlaySplit -> 0xCCFFFFFF.toInt()
+                splitHandle.contains(mouseX.toDouble(), mouseY.toDouble()) -> 0xAAFFFFFF.toInt()
+                else -> 0x66FFFFFF.toInt()
+            }
+        )
+        guiGraphics.fill(
+            columnHandle.left,
+            columnHandle.top,
+            columnHandle.right,
+            columnHandle.bottom,
+            when {
+                draggingBlankOverlayColumnSplit -> 0xCCFFFFFF.toInt()
+                columnHandle.contains(mouseX.toDouble(), mouseY.toDouble()) -> 0xAAFFFFFF.toInt()
+                else -> 0x66FFFFFF.toInt()
+            }
+        )
 
         blankOverlayInfoTargets.clear()
         val infoX = blankOverlayLeftRect.left + 10
-        var y = blankOverlayLeftRect.top + 10
-        guiGraphics.drawString(font, "Variables", infoX, y, 0xFFFFE28A.toInt()); y += font.lineHeight + 8
+        var y = blankOverlayLeftRect.top + 10 + blankOverlayInfoScrollOffset
+        val visibleTop = blankOverlayLeftRect.top + 6
+        val visibleBottom = blankOverlayLeftRect.bottom - 6
+        guiGraphics.enableScissor(
+            blankOverlayLeftRect.left + 4,
+            blankOverlayLeftRect.top + 4,
+            blankOverlayLeftRect.right - 4,
+            blankOverlayLeftRect.bottom - 4
+        )
+        fun drawInfoEntry(label: String, color: Int, tooltip: String? = null, extraGap: Int = 0) {
+            val rowTop = y
+            val rowBottom = y + font.lineHeight
+            if (rowBottom >= visibleTop && rowTop <= visibleBottom) {
+                guiGraphics.drawString(font, label, infoX, y, color)
+                if (tooltip != null) {
+                    blankOverlayInfoTargets[tooltip] = Rect(infoX - 2, y - 1, font.width(label) + 4, font.lineHeight + 2)
+                }
+            }
+            y += font.lineHeight + extraGap
+        }
+        drawInfoEntry("Variables", 0xFFFFE28A.toInt(), extraGap = 8)
         val variableEntries = listOf(
             "rand" to "rand : float, -1..1",
             "rand_x" to "rand_x : float, -1..1",
@@ -1598,12 +2562,10 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             "start_pos_y" to "start_pos_y : float, initial local y"
         )
         variableEntries.forEach { (label, tooltip) ->
-            guiGraphics.drawString(font, label, infoX, y, 0xFFFFFFFF.toInt())
-            blankOverlayInfoTargets[tooltip] = Rect(infoX - 2, y - 1, font.width(label) + 4, font.lineHeight + 2)
-            y += font.lineHeight + 4
+            drawInfoEntry(label, 0xFFFFFFFF.toInt(), tooltip, 4)
         }
         y += 8
-        guiGraphics.drawString(font, "Functions", infoX, y, 0xFFFFE28A.toInt()); y += font.lineHeight + 8
+        drawInfoEntry("Functions", 0xFFFFE28A.toInt(), extraGap = 8)
         val functionEntries = listOf(
             "sin(angle: float)" to "sin(angle: float) -> float",
             "cos(angle: float)" to "cos(angle: float) -> float",
@@ -1616,22 +2578,72 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             "randf(from: float, to: float)" to "randf(from: float, to: float) -> float"
         )
         functionEntries.forEach { (label, tooltip) ->
-            guiGraphics.drawString(font, label, infoX, y, 0xFFFFFFFF.toInt())
-            blankOverlayInfoTargets[tooltip] = Rect(infoX - 2, y - 1, font.width(label) + 4, font.lineHeight + 2)
-            y += font.lineHeight + 4
+            drawInfoEntry(label, 0xFFFFFFFF.toInt(), tooltip, 4)
         }
         y += 8
-        guiGraphics.drawString(font, "Info", infoX, y, 0xFFFFE28A.toInt()); y += font.lineHeight + 8
-        guiGraphics.drawString(font, "a = rand_x; b = age_tick;", infoX, y, 0xFFFFFFFF.toInt()); y += font.lineHeight + 4
-        guiGraphics.drawString(font, "sin(a * 360) * b;", infoX, y, 0xFFFFFFFF.toInt())
+        drawInfoEntry("Vanilla colors", 0xFFFFE28A.toInt(), extraGap = 8)
+        val colorEntries = listOf(
+            "black, dark_blue, dark_green, dark_aqua" to "Vanilla palette constants",
+            "dark_red, dark_purple, gold, gray" to "Vanilla palette constants",
+            "dark_gray, blue, green, aqua" to "Vanilla palette constants",
+            "red, light_purple, yellow, white" to "Vanilla palette constants"
+        )
+        colorEntries.forEach { (label, tooltip) ->
+            drawInfoEntry(label, 0xFFFFFFFF.toInt(), tooltip, 4)
+        }
+        y += 8
+        drawInfoEntry("Keyframes", 0xFFFFE28A.toInt(), extraGap = 8)
+        val keyframeEntries = listOf(
+            "keyframe(t) { ... }" to "keyframe(axis) supports points, ranges and { value = ..., easing = ... }",
+            "0.0 = 1" to "Point keyframe: exact value at time 0.0",
+            "0.5..0.75 = 0.5" to "Range keyframe: hold this value from 0.5 to 0.75",
+            "1.0 = { value = 0, easing = 2 }" to "Object keyframe with easing. easing = 1 means linear",
+            "0.52 = { value = pos_x + 10, easing = 0.375 }" to "Procedural keyframe value. Any normal numeric expression is allowed inside value"
+        )
+        keyframeEntries.forEach { (label, tooltip) ->
+            drawInfoEntry(label, 0xFFFFFFFF.toInt(), tooltip, 4)
+        }
+        y += 8
+        drawInfoEntry("Info", 0xFFFFE28A.toInt(), extraGap = 8)
+        drawInfoEntry("a = rand_x; b = age_tick;", 0xFFFFFFFF.toInt(), extraGap = 4)
+        drawInfoEntry("sin(a * 360) * b;", 0xFFFFFFFF.toInt())
+        y += 8
+        drawInfoEntry("Alpha example", 0xFFFFE28A.toInt(), extraGap = 6)
+        drawInfoEntry("t = life_factor;", 0xFFFFFFFF.toInt(), extraGap = 4)
+        drawInfoEntry("keyframe(t) { 0.0 = 1, 0.8 = { value = 1, easing = 1 }, 1.0 = { value = 0, easing = 2 } }", 0xFFFFFFFF.toInt(), extraGap = 8)
+        drawInfoEntry("Scale example", 0xFFFFE28A.toInt(), extraGap = 6)
+        drawInfoEntry("t = life_factor;", 0xFFFFFFFF.toInt(), extraGap = 4)
+        drawInfoEntry("keyframe(t) { 0.0 = 0.5, 0.2 = 1.0, 1.0 = 0.2 }", 0xFFFFFFFF.toInt(), extraGap = 8)
+        drawInfoEntry("Color example", 0xFFFFE28A.toInt(), extraGap = 6)
+        drawInfoEntry("t = life_factor;", 0xFFFFFFFF.toInt(), extraGap = 4)
+        drawInfoEntry("keyframe(t) { 0.0 = #FF0000, 0.5 = { value = #00FF00, easing = 1 }, 1.0 = #0000FF }", 0xFFFFFFFF.toInt(), extraGap = 8)
+        drawInfoEntry("Multiply color example", 0xFFFFE28A.toInt(), extraGap = 6)
+        drawInfoEntry("t = life_factor;", 0xFFFFFFFF.toInt(), extraGap = 4)
+        drawInfoEntry("keyframe(t) { 0.0 = #FFFFFF, 1.0 = #66AAFF }", 0xFFFFFFFF.toInt())
+        guiGraphics.disableScissor()
+        blankOverlayInfoContentHeight = (y - blankOverlayInfoScrollOffset) - blankOverlayLeftRect.top + 10
+        renderBlankOverlayInfoScrollbar(guiGraphics)
+
+        guiGraphics.drawString(font, "Preview", blankOverlayPreviewRect.left + 10, blankOverlayPreviewRect.top + 10, 0xFFFFE28A.toInt())
+        guiGraphics.enableScissor(
+            blankOverlayPreviewRect.left + 8,
+            blankOverlayPreviewRect.top + 26,
+            blankOverlayPreviewRect.right - 8,
+            blankOverlayPreviewRect.bottom - 8
+        )
+        HudCelebrationEffectsClient.render(guiGraphics, previewBoundsFor(blankOverlayPreviewRect.inset(14)), null, preview = true)
+        guiGraphics.disableScissor()
 
         blankOverlayField.visible = true
         blankOverlayField.active = true
         blankOverlayField.setPosition(blankOverlayRightRect.left + 10, blankOverlayRightRect.top + 10)
         blankOverlayField.setWidth(blankOverlayRightRect.width - 20)
+        blankOverlayField.height = blankOverlayRightRect.height - 20
         blankOverlayField.render(guiGraphics, mouseX, mouseY, 0f)
 
-        val hoveredInfo = blankOverlayInfoTargets.entries.firstOrNull { it.value.contains(mouseX.toDouble(), mouseY.toDouble()) }?.key
+        val hoveredInfo = blankOverlayInfoTargets.entries.firstOrNull {
+            it.value.contains(mouseX.toDouble(), mouseY.toDouble()) && blankOverlayLeftRect.contains(mouseX.toDouble(), mouseY.toDouble())
+        }?.key
         if (hoveredInfo != null) {
             renderBlankTooltip(guiGraphics, mouseX + 12, mouseY + 12, hoveredInfo)
         }
@@ -1702,11 +2714,22 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         val color = blankEmitter().renderType == HudCelebrationRenderType.PARTICLE
         val sheet = texture && blankEmitter().textureMode == HudCelebrationTextureMode.SHEET
         val sequence = texture && blankEmitter().textureMode == HudCelebrationTextureMode.SEQUENCE
+        val item = blankEmitter().renderType == HudCelebrationRenderType.ITEMSTACK
+        val text = blankEmitter().renderType == HudCelebrationRenderType.TEXT
         blankRenderTypeButton.visible = true
         blankRenderTypeButton.active = true
         blankColorField.visible = color
         blankColorField.active = color
-        listOf(blankTextureModeButton, blankTextureIdField, blankPickTextureButton, blankUvXField, blankUvYField, blankUvWidthField, blankUvHeightField).forEach {
+        listOf(
+            blankTextureModeButton,
+            blankTextureIdField,
+            blankPickTextureButton,
+            blankTextureTintField,
+            blankUvXField,
+            blankUvYField,
+            blankUvWidthField,
+            blankUvHeightField
+        ).forEach {
             it.visible = texture
             it.active = texture
         }
@@ -1716,8 +2739,26 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
         blankFramesYField.active = sheet
         blankFramesField.visible = sheet || sequence
         blankFramesField.active = sheet || sequence
+        blankFrameTimeField.visible = sheet || sequence
+        blankFrameTimeField.active = sheet || sequence
         blankTextureInterpolateButton.visible = sheet || sequence
         blankTextureInterpolateButton.active = sheet || sequence
+        blankItemIdField.visible = item
+        blankItemIdField.active = item
+        blankPickItemButton.visible = item
+        blankPickItemButton.active = item
+        blankUseTargetItemButton.visible = item
+        blankUseTargetItemButton.active = item
+        blankTextContentField.visible = text
+        blankTextContentField.active = text
+        blankTextColorField.visible = text
+        blankTextColorField.active = text
+        blankTextSizeField.visible = text
+        blankTextSizeField.active = text
+        blankTextShadowButton.visible = text
+        blankTextShadowButton.active = text
+        blankTextShadowColorField.visible = text
+        blankTextShadowColorField.active = text
     }
 
     private fun hoveredBlankEditableField(mouseX: Double, mouseY: Double): StyledEditField? {
@@ -1725,35 +2766,148 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             blankCountField,
             blankRateField,
             blankLifetimeField,
+            blankOriginXField,
+            blankOriginYField,
             blankColorField,
             blankTextureIdField,
+            blankTextureTintField,
             blankUvXField,
             blankUvYField,
             blankUvWidthField,
             blankUvHeightField,
             blankFramesXField,
             blankFramesYField,
-            blankFramesField
+            blankFramesField,
+            blankFrameTimeField,
+            blankItemIdField,
+            blankTextContentField,
+            blankTextColorField,
+            blankTextSizeField,
+            blankTextShadowColorField,
+            blankPositionXField,
+            blankPositionYField,
+            blankRotationField,
+            blankScaleField,
+            blankAlphaField
         ).firstOrNull { it.visible && it.isMouseOver(mouseX, mouseY) }
     }
 
     private fun openBlankOverlay(field: StyledEditField) {
         blankOverlayTarget = field
+        blankOverlayTitle = blankOverlayTitleFor(field)
         blankOverlayOpen = true
+        blankOverlayInfoScrollOffset = 0
         blankOverlayField.visible = true
         blankOverlayField.active = true
         blankOverlayField.setValue(field.value)
         blankOverlayField.setFocused(true)
         setFocused(blankOverlayField)
+        queuePreview(forceNow = true)
     }
 
     private fun closeBlankOverlay() {
         blankOverlayOpen = false
         blankOverlayTarget = null
+        blankOverlayTitle = "variable"
+        blankOverlayInfoTargets.clear()
         blankOverlayField.visible = false
         blankOverlayField.active = false
         blankOverlayField.setFocused(false)
         setFocused(null)
+        queuePreview(forceNow = true)
+    }
+
+    private fun blankOverlayTitleFor(field: StyledEditField): String = when (field) {
+        blankCountField -> "Count"
+        blankRateField -> "Particles per minute"
+        blankLifetimeField -> "Lifetime"
+        blankOriginXField, blankOriginYField -> "Origin"
+        blankColorField -> "Color"
+        blankTextureIdField -> "Texture ID"
+        blankTextureTintField -> "Multiply color"
+        blankUvXField, blankUvYField, blankUvWidthField, blankUvHeightField -> "UV"
+        blankFramesXField, blankFramesYField -> "Frames X / Y"
+        blankFramesField -> "Frames"
+        blankFrameTimeField -> "Frame time ms"
+        blankItemIdField -> "Item ID"
+        blankTextContentField -> "Text"
+        blankTextColorField -> "Text color"
+        blankTextSizeField -> "Text size"
+        blankTextShadowColorField -> "Shadow color"
+        blankPositionXField, blankPositionYField -> "Position"
+        blankRotationField -> "Rotation"
+        blankScaleField -> "Scale"
+        blankAlphaField -> "Alpha"
+        else -> "variable"
+    }
+
+    private fun blankOverlaySplitHandleRect(): Rect {
+        val centerX = blankOverlayLeftRect.right + scaledPanelGap / 2
+        return Rect(centerX - 2, blankOverlayRightRect.centerY - 18, 4, 36)
+    }
+
+    private fun blankOverlayColumnHandleRect(): Rect {
+        val centerY = blankOverlayLeftRect.bottom + scaledPanelGap / 2
+        return Rect(blankOverlayLeftRect.centerX - 18, centerY - 2, 36, 4)
+    }
+
+    private fun blankOverlayInfoMinScrollOffset(): Int {
+        val visibleHeight = (blankOverlayLeftRect.height - 12).coerceAtLeast(1)
+        return -(blankOverlayInfoContentHeight - visibleHeight).coerceAtLeast(0)
+    }
+
+    private fun blankOverlayInfoScrollbarTrackRect(): Rect {
+        val left = blankOverlayLeftRect.right - 10
+        return Rect(left, blankOverlayLeftRect.top + 8, 4, (blankOverlayLeftRect.height - 16).coerceAtLeast(1))
+    }
+
+    private fun blankOverlayInfoScrollbarThumbRect(): Rect {
+        val track = blankOverlayInfoScrollbarTrackRect()
+        val visibleHeight = (blankOverlayLeftRect.height - 12).coerceAtLeast(1)
+        val contentHeight = blankOverlayInfoContentHeight.coerceAtLeast(visibleHeight)
+        val thumbHeight = ((visibleHeight.toFloat() / contentHeight.toFloat()) * track.height).toInt().coerceIn(18, track.height)
+        val scrollRange = (-blankOverlayInfoMinScrollOffset()).coerceAtLeast(1)
+        val progress = (-blankOverlayInfoScrollOffset).toFloat() / scrollRange.toFloat()
+        val thumbTravel = (track.height - thumbHeight).coerceAtLeast(0)
+        val thumbTop = track.top + (thumbTravel * progress).toInt()
+        return Rect(track.left, thumbTop, track.width, thumbHeight)
+    }
+
+    private fun renderBlankOverlayInfoScrollbar(guiGraphics: GuiGraphics) {
+        val track = blankOverlayInfoScrollbarTrackRect()
+        val thumb = blankOverlayInfoScrollbarThumbRect()
+        guiGraphics.fill(track.left, track.top, track.right, track.bottom, 0x40343C46)
+        guiGraphics.fill(track.left, thumb.top, track.right, thumb.bottom, 0xFFD7DEE6.toInt())
+    }
+
+    private fun updateBlankOverlayInfoScrollFromMouse(mouseY: Double) {
+        val track = blankOverlayInfoScrollbarTrackRect()
+        val thumb = blankOverlayInfoScrollbarThumbRect()
+        val thumbTravel = (track.height - thumb.height).coerceAtLeast(0)
+        val thumbCenter = mouseY.toFloat() - thumb.height / 2f
+        val normalized = ((thumbCenter - track.top) / max(1f, thumbTravel.toFloat())).coerceIn(0f, 1f)
+        blankOverlayInfoScrollOffset = -((-blankOverlayInfoMinScrollOffset()) * normalized).toInt()
+    }
+
+    private fun updateBlankOverlaySplit(mouseX: Double) {
+        val body = bodyRect()
+        val inset = max(28, scaledBodyInnerMargin * 2)
+        val overlay = body.inset(inset)
+        val contentLeft = overlay.left + scaledBodyInnerMargin
+        val contentWidth = overlay.width - scaledBodyInnerMargin * 2
+        val ratio = ((mouseX - contentLeft) / contentWidth.toDouble()).toFloat()
+        blankOverlaySplitRatio = ratio.coerceIn(0.16f, 0.42f)
+    }
+
+    private fun updateBlankOverlayColumnSplit(mouseY: Double) {
+        val body = bodyRect()
+        val inset = max(28, scaledBodyInnerMargin * 2)
+        val overlay = body.inset(inset)
+        val contentTop = overlay.top + scaledBodyInnerMargin + font.lineHeight + 12
+        val totalHeight = overlay.bottom - contentTop - scaledBodyInnerMargin
+        val previewHeight = (overlay.bottom - scaledBodyInnerMargin - mouseY).toFloat()
+        val ratio = (previewHeight / totalHeight.toFloat()).coerceIn(0.18f, 0.58f)
+        blankOverlayPreviewRatio = ratio
     }
 
     private fun blankEmitter(): HudCelebrationEmitterConfig = currentEmitter()
@@ -1784,6 +2938,9 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
     }
 
     private fun blankTextureInterpolateLabel(): String = if (blankEmitter().textureInterpolate) "Interpolate: on" else "Interpolate: off"
+    private fun blankUseTargetItemLabel(): String = if (blankEmitter().useTargetItem) "Use target item: on" else "Use target item: off"
+
+    private fun blankTextShadowLabel(): String = if (blankEmitter().textShadowEnabled) "Shadow: on" else "Shadow: off"
 
     private fun normalizedBlankLifetimeText(): String {
         val raw = blankEmitter().lifetimeExpression.trim()
@@ -1799,25 +2956,136 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private fun blankVisualSectionTop(layout: BlankLayout): Int {
         val generalTop = blankContentRect(layout).top + blankScrollOffset + font.lineHeight + 10
-        return generalTop + 18 + 4 * (fieldHeight + 10) + layout.sectionGap
+        return generalTop + 18 + 5 * (fieldHeight + 10) + layout.sectionGap
+    }
+
+    private fun blankVisualRowCount(): Int = when (blankEmitter().renderType) {
+        HudCelebrationRenderType.PARTICLE -> 4
+        HudCelebrationRenderType.TEXTURE -> when (blankEmitter().textureMode) {
+            HudCelebrationTextureMode.SINGLE -> 7
+            HudCelebrationTextureMode.SHEET -> 11
+            HudCelebrationTextureMode.SEQUENCE -> 10
+        }
+        HudCelebrationRenderType.ITEMSTACK -> 3
+        HudCelebrationRenderType.TEXT -> 4
+        else -> 2
+    }
+
+    private fun blankControlSectionTop(layout: BlankLayout): Int {
+        val visualTop = blankVisualSectionTop(layout)
+        return visualTop + 18 + blankVisualRowCount() * (fieldHeight + 10) + layout.sectionGap
     }
 
     private fun blankTooltipText(key: String): String = when (key) {
         "emitter_type" -> "Какой пресет финиш-эффекта редактируется сейчас."
         "spawn_mode" -> "Одиночный спавнит один burst, постоянный поддерживает поток частиц."
+        "origin" -> "Базовая точка спавна частицы. Поддерживаются формулы и HUD-переменные: hud_left, hud_right, hud_top, hud_bottom, hud_center_x, hud_center_y."
         "spawn_amount" -> "Если поле пустое, будет использовано 0."
         "lifetime" -> "Время жизни частицы в тиках. Если поле пустое, будет 0."
         "visual_type" -> "Тип визуального представления частицы."
-        "visual_color" -> "HEX-цвет. Если пусто, используется #FFFFFF."
-        "visual_uv_xy" -> "Левый верхний угол UV-области в пикселях."
-        "visual_uv_wh" -> "Размер UV-области в пикселях."
+        "visual_color" -> "HEX-цвет или палитра через запятую: #FF0000,#00FF00,#0000FF. Если пусто, используется #FFFFFF."
+        "visual_lerp_color" -> "Цвет или палитра, в которую частица будет переходить. Если пусто, перехода нет."
+        "visual_lerp_factor" -> "Фактор перехода. Если пусто, используется life_factor."
+        "visual_uv" -> "UV: X, Y, W, H в пикселях."
         "visual_texture_mode" -> "Single, Spritesheet или Sequence."
         "visual_texture_id" -> "Identifier текстуры. Если пусто, будет error-texture."
+        "visual_texture_tint" -> "Multiply color для текстуры. Можно указывать палитру через запятую."
+        "visual_texture_tint_lerp" -> "Цвет или палитра, в которую будет переходить multiply color."
+        "visual_texture_tint_factor" -> "Фактор перехода multiply color. Если пусто, используется life_factor."
         "visual_frames_xy" -> "Если пусто, позже можно будет подбирать автоматически."
-        "visual_frames" -> "Порядок кадров: 0,1,2,3. Если пусто, будет использоваться порядок по умолчанию."
-        "visual_interpolate" -> "Плавный переход между кадрами."
-        "visual_stub" -> "Этот блок ещё не собран в новом интерфейсе."
+        "visual_frames" -> "Порядок кадров: 0,1,2,3 или диапазон 0..11. Для Sequence можно указывать токены: a,b,c,01,fx_a."
+        "visual_frame_time" -> "Скорость проигрывания анимации в миллисекундах на кадр."
+        "visual_interpolate" -> "Плавный переход между кадрами и выбор случайного кадра на частицу."
+        "visual_item_id" -> "Identifier предмета. Если пусто, будет использован minecraft:barrier."
+        "visual_use_target_item" -> "Использовать предмет текущей цели вместо фиксированного item id."
+        "visual_text_content" -> "Текст частицы. Поддерживаются переносы через \\n."
+        "visual_text_style" -> "Цвет текста и размер."
+        "visual_text_shadow" -> "Тень текста и цвет тени."
+        "control_position" -> "Положение частицы: X и Y."
+        "control_rotation" -> "Поворот частицы в градусах."
+        "control_scale" -> "Размер частицы. 1.0 = базовый размер."
+        "control_alpha" -> "Прозрачность частицы. 0..1."
         else -> "example_tooltip_info :P"
+    }
+
+    private fun parseColorList(raw: String): List<String> =
+        if (isDynamicColorExpression(raw)) {
+            listOf(raw.trim()).filter { it.isNotEmpty() }
+        } else {
+            raw.split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+        }
+
+    private fun isDynamicColorExpression(raw: String): Boolean {
+        val trimmed = raw.trim()
+        if (trimmed.isEmpty()) return false
+        return trimmed.contains("keyframe(", ignoreCase = true) ||
+            trimmed.contains(';') ||
+            trimmed.contains('{') ||
+            trimmed.contains('(') ||
+            trimmed.contains(')') ||
+            trimmed.contains('+') ||
+            trimmed.contains('*') ||
+            trimmed.contains('/') ||
+            Regex("(?<!^)-(?!$)").containsMatchIn(trimmed)
+    }
+
+    private fun blankHoveredFieldError(mouseX: Double, mouseY: Double): String? {
+        val field = hoveredBlankEditableField(mouseX, mouseY) ?: return null
+        return when (field) {
+            blankColorField,
+            blankTextureTintField,
+            blankTextColorField,
+            blankTextShadowColorField -> validateColorInput(field.value)
+            else -> null
+        }
+    }
+
+    private fun validateColorInput(raw: String): String? {
+        if (raw.isBlank() || isDynamicColorExpression(raw)) return null
+        val invalid = raw.split(',')
+            .map { it.trim() }
+            .firstOrNull { it.isNotEmpty() && parseColorLiteralOrNull(it) == null }
+        return invalid?.let { "Invalid color: $it" }
+    }
+
+    private fun previewTextColor(raw: String): Int {
+        val first = if (isDynamicColorExpression(raw)) {
+            Regex("(#|0x)[0-9A-Fa-f]{6,8}").find(raw)?.value ?: raw.trim()
+        } else {
+            parseColorList(raw).firstOrNull() ?: raw.trim()
+        }
+        return parseColorLiteralOrNull(first) ?: 0xFFF7F8FA.toInt()
+    }
+
+    private fun parseColorLiteralOrNull(raw: String): Int? {
+        val value = raw.trim()
+            .removePrefix("#")
+            .removePrefix("0x")
+            .removePrefix("0X")
+        return when (value.length) {
+            6 -> value.toLongOrNull(16)?.toInt()?.let { 0xFF000000.toInt() or it }
+            8 -> value.toLongOrNull(16)?.toInt()
+            else -> null
+        }
+    }
+
+    private fun Int.wrapIndex(size: Int): Int {
+        if (size <= 0) return 0
+        val mod = this % size
+        return if (mod < 0) mod + size else mod
+    }
+
+
+    private fun toggleBlankUseTargetItem() {
+        mutateEmitter { it.copy(useTargetItem = !it.useTargetItem) }
+        blankUseTargetItemButton.setLabel(Component.literal(blankUseTargetItemLabel()))
+    }
+
+    private fun toggleBlankTextShadow() {
+        mutateEmitter { it.copy(textShadowEnabled = !it.textShadowEnabled) }
+        blankTextShadowButton.setLabel(Component.literal(blankTextShadowLabel()))
     }
 
     private fun previewBounds(): HudRenderBounds {
@@ -2083,6 +3351,7 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
 
     private fun expressionVariables(): Map<String, Double> {
         val e = currentEmitter()
+        val bounds = previewBounds()
         return mapOf(
             "life_time" to e.lifetimeTicks.toDouble(),
             "life_factor" to 0.0,
@@ -2096,7 +3365,13 @@ class HudEffectEditorScreen(private val parent: Screen?) : Screen(Component.lite
             "pos_x" to 0.0,
             "pos_y" to 0.0,
             "start_pos_x" to 0.0,
-            "start_pos_y" to 0.0
+            "start_pos_y" to 0.0,
+            "hud_left" to bounds.left.toDouble(),
+            "hud_right" to bounds.right.toDouble(),
+            "hud_top" to bounds.top.toDouble(),
+            "hud_bottom" to bounds.bottom.toDouble(),
+            "hud_center_x" to bounds.centerX.toDouble(),
+            "hud_center_y" to bounds.centerY.toDouble()
         )
     }
 

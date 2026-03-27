@@ -11,11 +11,13 @@ import net.minecraft.world.entity.EntitySpawnReason
 import net.minecraft.world.entity.LivingEntity
 import net.minecraft.world.item.ItemStack
 import net.minecraft.world.item.Items
+import org.slf4j.LoggerFactory
 import ru.benos_codex.gofindwin.client.hud.TimerHudConfigManager
 import kotlin.math.max
 import kotlin.random.Random
 
 object HudCelebrationEffectsClient {
+    private val LOGGER = LoggerFactory.getLogger("GoFindWin/HudCelebrationEffects")
     private const val MAX_ACTIVE_EFFECTS = 320
     private enum class RenderLayer { LIVE, PREVIEW }
     private val liveEffects = mutableListOf<EffectInstance>()
@@ -155,7 +157,7 @@ object HudCelebrationEffectsClient {
                     spawnEmitter(emitter, bounds, targetItemId, layer)
                     spawnersFor(layer)[key] = SpawnerState(
                         emitter = emitter,
-                        remainingSec = (evaluatedInt(emitter.lifetimeExpression, emitter.lifetimeTicks, expressionSeedVariables(emitter)).coerceAtLeast(1) / 20f),
+                        remainingSec = (evaluatedInt(emitter.lifetimeExpression, emitter.lifetimeTicks, expressionSeedVariables(emitter, bounds)).coerceAtLeast(1) / 20f),
                         accumulatorSec = 0f
                     )
                 }
@@ -175,7 +177,7 @@ object HudCelebrationEffectsClient {
                 continue
             }
             state.accumulatorSec += deltaSeconds
-            val periodSec = (evaluatedFloat(state.emitter.spawnPeriodExpression, state.emitter.spawnPeriodMs, expressionSeedVariables(state.emitter)) / 1000f).coerceAtLeast(0.01f)
+            val periodSec = (evaluatedFloat(state.emitter.spawnPeriodExpression, state.emitter.spawnPeriodMs, expressionSeedVariables(state.emitter, bounds)) / 1000f).coerceAtLeast(0.01f)
             while (state.accumulatorSec >= periodSec) {
                 state.accumulatorSec -= periodSec
                 spawnEmitter(state.emitter, bounds, targetItemId, layer)
@@ -185,7 +187,7 @@ object HudCelebrationEffectsClient {
 
     private fun spawnEmitter(emitter: HudCelebrationEmitterConfig, bounds: HudRenderBounds, targetItemId: String?, layer: RenderLayer) {
         val effects = effectsFor(layer)
-        val count = evaluatedInt(emitter.countExpression, emitter.count, expressionSeedVariables(emitter)).coerceAtLeast(1)
+        val count = evaluatedInt(emitter.countExpression, emitter.count, expressionSeedVariables(emitter, bounds)).coerceAtLeast(1)
         repeat(count) {
             createEffectInstance(emitter, bounds, targetItemId)?.let(effects::add)
         }
@@ -197,7 +199,7 @@ object HudCelebrationEffectsClient {
         }
     }
 
-    private fun expressionSeedVariables(emitter: HudCelebrationEmitterConfig): Map<String, Double> = mapOf(
+    private fun expressionSeedVariables(emitter: HudCelebrationEmitterConfig, bounds: HudRenderBounds): Map<String, Double> = mapOf(
         "life_time" to emitter.lifetimeTicks.toDouble(),
         "life_factor" to 0.0,
         "age_tick" to 0.0,
@@ -210,7 +212,13 @@ object HudCelebrationEffectsClient {
         "pos_x" to 0.0,
         "pos_y" to 0.0,
         "start_pos_x" to 0.0,
-        "start_pos_y" to 0.0
+        "start_pos_y" to 0.0,
+        "hud_left" to bounds.left.toDouble(),
+        "hud_right" to bounds.right.toDouble(),
+        "hud_top" to bounds.top.toDouble(),
+        "hud_bottom" to bounds.bottom.toDouble(),
+        "hud_center_x" to bounds.centerX.toDouble(),
+        "hud_center_y" to bounds.centerY.toDouble()
     )
 
     private fun createEffectInstance(
@@ -218,7 +226,15 @@ object HudCelebrationEffectsClient {
         bounds: HudRenderBounds,
         targetItemId: String?
     ): EffectInstance? {
-        val origin = resolveOrigin(bounds, emitter.origin)
+        val rand = Random.nextFloat() * 2f - 1f
+        val randX = Random.nextFloat() * 2f - 1f
+        val randY = Random.nextFloat() * 2f - 1f
+        val originVariables = expressionSeedVariables(emitter, bounds) + mapOf(
+            "rand" to rand.toDouble(),
+            "rand_x" to randX.toDouble(),
+            "rand_y" to randY.toDouble()
+        )
+        val origin = resolveOrigin(bounds, emitter, originVariables)
         val lifeTicks = evaluatedInt(emitter.lifetimeExpression, emitter.lifetimeTicks, mapOf(
             "life_time" to emitter.lifetimeTicks.toDouble(),
             "life_factor" to 0.0,
@@ -226,18 +242,21 @@ object HudCelebrationEffectsClient {
             "age_frame" to 0.0,
             "age_tick_delta" to 0.0,
             "age_frame_delta" to 0.0,
-            "rand" to 0.0,
-            "rand_x" to 0.0,
-            "rand_y" to 0.0,
+            "rand" to rand.toDouble(),
+            "rand_x" to randX.toDouble(),
+            "rand_y" to randY.toDouble(),
             "pos_x" to 0.0,
             "pos_y" to 0.0,
             "start_pos_x" to 0.0,
-            "start_pos_y" to 0.0
+            "start_pos_y" to 0.0,
+            "hud_left" to bounds.left.toDouble(),
+            "hud_right" to bounds.right.toDouble(),
+            "hud_top" to bounds.top.toDouble(),
+            "hud_bottom" to bounds.bottom.toDouble(),
+            "hud_center_x" to bounds.centerX.toDouble(),
+            "hud_center_y" to bounds.centerY.toDouble()
         )).coerceAtLeast(1)
         val life = lifeTicks / 20f
-        val rand = Random.nextFloat() * 2f - 1f
-        val randX = Random.nextFloat() * 2f - 1f
-        val randY = Random.nextFloat() * 2f - 1f
         val variables = mapOf(
             "life_time" to lifeTicks.toDouble(),
             "life_factor" to 0.0,
@@ -260,10 +279,15 @@ object HudCelebrationEffectsClient {
             else -> null
         }
 
+        val sequenceTokens = parseFrameTokens(emitter.textureFrameOrder, variables)
         val textureId = when (emitter.renderType) {
             HudCelebrationRenderType.TEXTURE -> when (emitter.textureMode) {
-                HudCelebrationTextureMode.SEQUENCE -> resolveSequenceTextureIdentifier(emitter.textureId, 0)
-                    ?: resolveSequenceTextureIdentifier(emitter.textureId, 1)
+                HudCelebrationTextureMode.SEQUENCE -> {
+                    val firstToken = sequenceTokens.firstOrNull() ?: "0"
+                    resolveSequenceTextureIdentifier(emitter.textureId, firstToken)
+                        ?: resolveSequenceTextureIdentifier(emitter.textureId, "0")
+                        ?: resolveSequenceTextureIdentifier(emitter.textureId, "1")
+                }
                 else -> resolveTextureIdentifier(emitter.textureId)
             }
             else -> null
@@ -274,8 +298,14 @@ object HudCelebrationEffectsClient {
         if (emitter.renderType == HudCelebrationRenderType.MOB && mob == null) return null
         if (emitter.renderType == HudCelebrationRenderType.TEXTURE && textureId == null) return null
 
+        val colorRaw = emitter.colorPalette.joinToString(",")
+        val colorLerpRaw = emitter.colorLerpPalette.joinToString(",")
         val colorStart = parsePaletteColor(emitter.colorPalette)
-        val colorEnd = parsePaletteColor(emitter.colorPalette)
+        val colorEnd = if (emitter.colorLerpPalette.isNotEmpty()) parsePaletteColor(emitter.colorLerpPalette) else colorStart
+        val textureTintRaw = emitter.textureTintColor
+        val textureTintLerpRaw = emitter.textureTintLerpPalette.joinToString(",")
+        val textureTintStart = parsePaletteColor(parseColorPalette(emitter.textureTintColor).ifEmpty { listOf("#FFFFFF") })
+        val textureTintEnd = if (emitter.textureTintLerpPalette.isNotEmpty()) parsePaletteColor(emitter.textureTintLerpPalette) else textureTintStart
 
         val spawnX = origin.first + Random.nextFloat() * evaluatedFloat(emitter.randomOffsetXExpression, emitter.randomOffsetX, variables) * 2f -
             evaluatedFloat(emitter.randomOffsetXExpression, emitter.randomOffsetX, variables)
@@ -319,6 +349,9 @@ object HudCelebrationEffectsClient {
             endAlpha = randomRange(emitter.endAlphaMin, emitter.endAlphaMax),
             startColor = colorStart,
             endColor = colorEnd,
+            colorExpressionRaw = colorRaw,
+            colorLerpExpressionRaw = colorLerpRaw,
+            colorLerpFactorExpression = emitter.colorLerpFactorExpression,
             textureMode = emitter.textureMode,
             texturePlaybackMode = emitter.texturePlaybackMode,
             textureIdPattern = emitter.textureId,
@@ -327,7 +360,11 @@ object HudCelebrationEffectsClient {
             textureUvY = evaluatedInt(emitter.textureUvYExpression, emitter.textureUvY, variables).coerceAtLeast(0),
             textureUvWidth = evaluatedInt(emitter.textureUvWidthExpression, emitter.textureUvWidth, variables).coerceAtLeast(1),
             textureUvHeight = evaluatedInt(emitter.textureUvHeightExpression, emitter.textureUvHeight, variables).coerceAtLeast(1),
-            textureTintColor = parseColor(emitter.textureTintColor),
+            textureTintStartColor = textureTintStart,
+            textureTintEndColor = textureTintEnd,
+            textureTintExpressionRaw = textureTintRaw,
+            textureTintLerpExpressionRaw = textureTintLerpRaw,
+            textureTintLerpFactorExpression = emitter.textureTintLerpFactorExpression,
             textureFramesX = evaluatedInt(emitter.textureFramesXExpression, emitter.textureFramesX, variables).coerceAtLeast(1),
             textureFramesY = evaluatedInt(emitter.textureFramesYExpression, emitter.textureFramesY, variables).coerceAtLeast(1),
             textureFrameTimeMs = evaluatedFloat(emitter.textureFrameTimeMsExpression, emitter.textureFrameTimeMs, variables).coerceAtLeast(10f),
@@ -414,7 +451,7 @@ object HudCelebrationEffectsClient {
         }
 
         when (effect.renderType) {
-            HudCelebrationRenderType.PARTICLE -> renderParticle(guiGraphics, effect, size, rotation, alpha, progress)
+            HudCelebrationRenderType.PARTICLE -> renderParticle(guiGraphics, effect, size, rotation, alpha, progress, deltaSeconds)
             HudCelebrationRenderType.TEXTURE -> renderTexture(guiGraphics, effect, size, rotation, alpha)
             HudCelebrationRenderType.ITEMSTACK -> renderItemStack(guiGraphics, effect, size, rotation)
             HudCelebrationRenderType.TEXT -> renderText(guiGraphics, effect, rotation, alpha)
@@ -422,8 +459,22 @@ object HudCelebrationEffectsClient {
         }
     }
 
-    private fun renderParticle(guiGraphics: GuiGraphics, effect: EffectInstance, size: Float, rotation: Float, alpha: Float, progress: Float) {
-        val color = blendColors(effect.startColor, effect.endColor, progress)
+    private fun renderParticle(guiGraphics: GuiGraphics, effect: EffectInstance, size: Float, rotation: Float, alpha: Float, progress: Float, deltaSeconds: Float) {
+        val variables = renderVariables(effect, progress, deltaSeconds)
+        val colorFactor = if (effect.colorLerpFactorExpression.isNotBlank()) {
+            evaluatedFloat(
+                effect.colorLerpFactorExpression,
+                progress,
+                variables
+            ).coerceIn(0f, 1f)
+        } else progress
+        val color = when {
+            isDynamicColorExpression(effect.colorExpressionRaw) ->
+                MathExpression.evaluateColor(effect.colorExpressionRaw, variables) ?: effect.startColor
+            isDynamicColorExpression(effect.colorLerpExpressionRaw) ->
+                blendColors(effect.startColor, MathExpression.evaluateColor(effect.colorLerpExpressionRaw, variables) ?: effect.endColor, colorFactor)
+            else -> blendColors(effect.startColor, effect.endColor, colorFactor)
+        }
         val argb = (((alpha * 255f).toInt().coerceIn(0, 255)) shl 24) or (color and 0x00FFFFFF)
         val pose = guiGraphics.pose()
         pose.pushMatrix()
@@ -447,12 +498,48 @@ object HudCelebrationEffectsClient {
         val totalFrames = when (effect.textureMode) {
             HudCelebrationTextureMode.SINGLE -> 1
             HudCelebrationTextureMode.SHEET -> (effect.textureFramesX * effect.textureFramesY).coerceAtLeast(1)
-            HudCelebrationTextureMode.SEQUENCE -> effect.textureFramesX.coerceAtLeast(1)
+            HudCelebrationTextureMode.SEQUENCE -> parsedTextureFrameTokens(effect).size.coerceAtLeast(1)
         }
-        val baseTint = effect.textureTintColor
+        val progress = (effect.age / effect.life).coerceIn(0f, 1f)
+        val variables = renderVariables(effect, progress, 0f)
+        val textureTintFactor = if (effect.textureTintLerpFactorExpression.isNotBlank()) {
+            evaluatedFloat(
+                effect.textureTintLerpFactorExpression,
+                progress,
+                variables
+            ).coerceIn(0f, 1f)
+        } else {
+            progress
+        }
+        val dynamicTint = if (isDynamicColorExpression(effect.textureTintExpressionRaw)) {
+            MathExpression.evaluateColor(effect.textureTintExpressionRaw, variables)
+        } else {
+            null
+        }
+        val baseTint = when {
+            isDynamicColorExpression(effect.textureTintExpressionRaw) ->
+                dynamicTint ?: effect.textureTintStartColor
+            isDynamicColorExpression(effect.textureTintLerpExpressionRaw) ->
+                blendColors(effect.textureTintStartColor, MathExpression.evaluateColor(effect.textureTintLerpExpressionRaw, variables) ?: effect.textureTintEndColor, textureTintFactor)
+            else -> blendColors(effect.textureTintStartColor, effect.textureTintEndColor, textureTintFactor)
+        }
         val r = (baseTint shr 16) and 0xFF
         val g = (baseTint shr 8) and 0xFF
         val b = baseTint and 0xFF
+        if (effect.textureTintExpressionRaw.isNotBlank()) {
+            LOGGER.info(
+                "textureTint raw='{}' dynamic={} evaluated={} fallback={} baseTint=0x{} rgb=({}, {}, {}) alpha={}",
+                effect.textureTintExpressionRaw,
+                isDynamicColorExpression(effect.textureTintExpressionRaw),
+                dynamicTint?.let { "0x%08X".format(it) } ?: "null",
+                "0x%08X".format(effect.textureTintStartColor),
+                "%08X".format(baseTint),
+                r,
+                g,
+                b,
+                alpha
+            )
+        }
         val animatedFrame = resolveAnimatedFrameInfo(effect, totalFrames)
         val currentSource = resolveTextureFrameSource(effect, animatedFrame.currentFrame) ?: return
         val nextSource = if (effect.textureInterpolate && animatedFrame.interpolation > 0.001f && animatedFrame.nextFrame != animatedFrame.currentFrame) {
@@ -506,7 +593,10 @@ object HudCelebrationEffectsClient {
     private fun resolveTextureFrameSource(effect: EffectInstance, frame: Int): TextureFrameSource? {
         val textureId = when (effect.textureMode) {
             HudCelebrationTextureMode.SINGLE, HudCelebrationTextureMode.SHEET -> effect.textureId
-            HudCelebrationTextureMode.SEQUENCE -> resolveSequenceTextureIdentifier(effect.textureIdPattern, frame) ?: effect.textureId
+            HudCelebrationTextureMode.SEQUENCE -> {
+                val token = parsedTextureFrameTokens(effect).getOrNull(frame) ?: frame.toString()
+                resolveSequenceTextureIdentifier(effect.textureIdPattern, token) ?: effect.textureId
+            }
         } ?: return null
         val textureSize = if (effect.textureMode == HudCelebrationTextureMode.SEQUENCE) resolveTextureSize(textureId) else null
         val uvX = when (effect.textureMode) {
@@ -583,12 +673,16 @@ object HudCelebrationEffectsClient {
         )
     }
 
-    private fun resolveOrigin(bounds: HudRenderBounds, origin: HudCelebrationOrigin): Pair<Float, Float> = when (origin) {
-        HudCelebrationOrigin.HUD_CENTER -> bounds.centerX to bounds.centerY
-        HudCelebrationOrigin.HUD_TOP -> bounds.centerX to bounds.top.toFloat()
-        HudCelebrationOrigin.HUD_BOTTOM -> bounds.centerX to bounds.bottom.toFloat()
-        HudCelebrationOrigin.HUD_LEFT -> bounds.left.toFloat() to bounds.centerY
-        HudCelebrationOrigin.HUD_RIGHT -> bounds.right.toFloat() to bounds.centerY
+    private fun resolveOrigin(
+        bounds: HudRenderBounds,
+        emitter: HudCelebrationEmitterConfig,
+        variables: Map<String, Double>
+    ): Pair<Float, Float> {
+        val fallbackX = bounds.centerX.toFloat()
+        val fallbackY = bounds.centerY.toFloat()
+        val x = evaluatedFloat(emitter.originXExpression, if (emitter.originXExpression.isBlank()) fallbackX else emitter.originX, variables)
+        val y = evaluatedFloat(emitter.originYExpression, if (emitter.originYExpression.isBlank()) fallbackY else emitter.originY, variables)
+        return x to y
     }
 
     private fun resolveItemStack(itemId: String?): ItemStack? {
@@ -618,11 +712,10 @@ object HudCelebrationEffectsClient {
         }
     }
 
-    private fun resolveSequenceTextureIdentifier(pattern: String, frame: Int): Identifier? {
+    private fun resolveSequenceTextureIdentifier(pattern: String, frameToken: String): Identifier? {
         val candidates = buildList {
             if (pattern.contains("%d")) {
-                add(pattern.replace("%d", frame.toString()))
-                add(pattern.replace("%d", (frame + 1).toString()))
+                add(pattern.replace("%d", frameToken))
             } else {
                 add(pattern)
             }
@@ -645,10 +738,10 @@ object HudCelebrationEffectsClient {
 
     private fun resolveAnimatedFrameAtStep(effect: EffectInstance, totalFrames: Int, step: Int): Int {
         val defaultOrder = (0 until totalFrames).toList()
-        val customOrder = effect.textureFrameOrder
-            .split(',', ';', ' ', '\n', '\r', '\t')
-            .mapNotNull { it.trim().takeIf(String::isNotEmpty)?.toIntOrNull() }
-            .filter { it in 0 until totalFrames }
+        val customOrder = when (effect.textureMode) {
+            HudCelebrationTextureMode.SEQUENCE -> parsedTextureFrameTokens(effect).indices.toList()
+            else -> parsedTextureFrameOrder(effect).filter { it in 0 until totalFrames }
+        }
         val order = if (customOrder.isEmpty()) defaultOrder else customOrder
         if (order.size == 1) return order.first()
         val index = when (effect.texturePlaybackMode) {
@@ -661,6 +754,72 @@ object HudCelebrationEffectsClient {
             }
         }
         return order[index]
+    }
+
+    private fun parsedTextureFrameOrder(effect: EffectInstance): List<Int> =
+        expandFrameOrder(effect.textureFrameOrder)
+
+    private fun parsedTextureFrameTokens(effect: EffectInstance): List<String> =
+        parseFrameTokens(effect.textureFrameOrder, renderVariables(effect, 0f, 0f))
+
+    private fun expandFrameOrder(raw: String): List<Int> =
+        raw.split(',', ';', ' ', '\n', '\r', '\t')
+            .flatMap { token ->
+                val trimmed = token.trim()
+                when {
+                    trimmed.isEmpty() -> emptyList()
+                    ".." in trimmed -> {
+                        val parts = trimmed.split("..", limit = 2)
+                        val from = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                        val to = parts.getOrNull(1)?.trim()?.toIntOrNull()
+                        if (from == null || to == null) emptyList()
+                        else if (from <= to) (from..to).toList()
+                        else (from downTo to).toList()
+                    }
+                    else -> trimmed.toIntOrNull()?.let(::listOf) ?: emptyList()
+                }
+            }
+
+    private fun parseFrameTokens(raw: String, variables: Map<String, Double>): List<String> {
+        val trimmed = raw.trim()
+        if (trimmed.startsWith("rand_value(", ignoreCase = true) && trimmed.endsWith(")")) {
+            val content = trimmed.substringAfter('(').dropLast(1)
+            val options = content.split(',', ';')
+                .flatMap { token -> expandFrameToken(token.trim()) }
+                .filter { it.isNotEmpty() }
+            if (options.isEmpty()) return emptyList()
+            val choice = stableChoiceIndex(options, variables)
+            return listOf(options[choice])
+        }
+        return raw.split(',', ';', ' ', '\n', '\r', '\t')
+            .flatMap { token ->
+                expandFrameToken(token.trim())
+            }
+    }
+
+    private fun expandFrameToken(token: String): List<String> =
+        when {
+            token.isEmpty() -> emptyList()
+            ".." in token -> {
+                val parts = token.split("..", limit = 2)
+                val from = parts.getOrNull(0)?.trim()?.toIntOrNull()
+                val to = parts.getOrNull(1)?.trim()?.toIntOrNull()
+                if (from == null || to == null) listOf(token)
+                else if (from <= to) (from..to).map(Int::toString)
+                else (from downTo to).map(Int::toString)
+            }
+            else -> listOf(token)
+        }
+
+    private fun stableChoiceIndex(options: List<String>, variables: Map<String, Double>): Int {
+        var hash = 17
+        listOf("rand", "rand_x", "rand_y", "start_pos_x", "start_pos_y").forEach { key ->
+            val value = variables[key] ?: 0.0
+            val bits = java.lang.Double.doubleToLongBits(value)
+            hash = 31 * hash + (bits xor (bits ushr 32)).toInt()
+        }
+        options.forEach { option -> hash = 31 * hash + option.hashCode() }
+        return Math.floorMod(hash, options.size)
     }
 
     private fun resolveTextureSize(textureId: Identifier): Pair<Int, Int>? {
@@ -679,13 +838,24 @@ object HudCelebrationEffectsClient {
         return parseColor(chosen)
     }
 
+    private fun isDynamicColorExpression(raw: String): Boolean =
+        raw.contains("keyframe(", ignoreCase = true) || raw.contains(';') || raw.contains('{')
+
+    private fun parseColorPalette(raw: String): List<String> =
+        raw.split(',')
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+
     private fun parseColor(raw: String): Int {
-        val normalized = raw.removePrefix("#")
+        val normalized = raw.trim()
+            .removePrefix("#")
+            .removePrefix("0x")
+            .removePrefix("0X")
         return when (normalized.length) {
-            6 -> (0xFF shl 24) or normalized.toInt(16)
-            8 -> normalized.toLong(16).toInt()
+            6 -> normalized.toLongOrNull(16)?.toInt()?.let { (0xFF shl 24) or it }
+            8 -> normalized.toLongOrNull(16)?.toInt()
             else -> 0xFFFFFFFF.toInt()
-        }
+        } ?: 0xFFFFFFFF.toInt()
     }
 
     private fun randomRange(min: Float, max: Float): Float {
@@ -707,6 +877,22 @@ object HudCelebrationEffectsClient {
     }
 
     private fun lerp(start: Float, end: Float, progress: Float): Float = start + (end - start) * progress
+
+    private fun renderVariables(effect: EffectInstance, progress: Float, deltaSeconds: Float): Map<String, Double> = mapOf(
+        "life_time" to effect.lifeTicks.toDouble(),
+        "life_factor" to progress.toDouble(),
+        "age_tick" to (effect.age * 20f).toDouble(),
+        "age_frame" to (effect.age * 60f).toDouble(),
+        "age_tick_delta" to (deltaSeconds * 20f).toDouble(),
+        "age_frame_delta" to (deltaSeconds * 60f).toDouble(),
+        "rand" to effect.rand.toDouble(),
+        "rand_x" to effect.randX.toDouble(),
+        "rand_y" to effect.randY.toDouble(),
+        "pos_x" to (effect.x - effect.spawnX).toDouble(),
+        "pos_y" to (effect.y - effect.spawnY).toDouble(),
+        "start_pos_x" to effect.startPosX.toDouble(),
+        "start_pos_y" to effect.startPosY.toDouble()
+    )
 
     private fun blendColors(start: Int, end: Int, progress: Float): Int {
         val sr = (start shr 16) and 0xFF
@@ -758,6 +944,9 @@ object HudCelebrationEffectsClient {
         val endAlpha: Float,
         val startColor: Int,
         val endColor: Int,
+        val colorExpressionRaw: String,
+        val colorLerpExpressionRaw: String,
+        val colorLerpFactorExpression: String,
         val textureMode: HudCelebrationTextureMode,
         val texturePlaybackMode: HudCelebrationTexturePlaybackMode,
         val textureIdPattern: String,
@@ -766,7 +955,11 @@ object HudCelebrationEffectsClient {
         val textureUvY: Int,
         val textureUvWidth: Int,
         val textureUvHeight: Int,
-        val textureTintColor: Int,
+        val textureTintStartColor: Int,
+        val textureTintEndColor: Int,
+        val textureTintExpressionRaw: String,
+        val textureTintLerpExpressionRaw: String,
+        val textureTintLerpFactorExpression: String,
         val textureFramesX: Int,
         val textureFramesY: Int,
         val textureFrameTimeMs: Float,
