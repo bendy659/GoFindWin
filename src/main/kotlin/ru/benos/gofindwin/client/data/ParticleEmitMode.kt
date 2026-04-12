@@ -4,6 +4,7 @@ import net.fabricmc.api.EnvType
 import net.fabricmc.api.Environment
 
 @Environment(EnvType.CLIENT)
-enum class ItemRenderMode(val id: String) {
-    D2("2d"), D3("3d")
+enum class ParticleEmitMode(val id: String) {
+    SINGLE("single"),
+    CONTINUOUS("continuous")
 }

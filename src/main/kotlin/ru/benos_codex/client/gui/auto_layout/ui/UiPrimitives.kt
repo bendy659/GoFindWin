@@ -49,6 +49,7 @@ sealed interface UiLength {
     data class Fixed(val value: Int) : UiLength
     data class Fill(val weight: Float = 1f) : UiLength
     data class Available(val weight: Float = 1f) : UiLength
+    data class Expand(val weight: Float = 1f) : UiLength
     data object Wrap : UiLength
 }
 
@@ -66,6 +67,8 @@ data class UiModifier(
     fun fillHeight(weight: Float = 1f): UiModifier = copy(height = UiLength.Fill(weight))
     fun availableWidth(weight: Float = 1f): UiModifier = copy(width = UiLength.Available(weight))
     fun availableHeight(weight: Float = 1f): UiModifier = copy(height = UiLength.Available(weight))
+    fun expandWidth(weight: Float = 1f): UiModifier = copy(width = UiLength.Expand(weight))
+    fun expandHeight(weight: Float = 1f): UiModifier = copy(height = UiLength.Expand(weight))
     fun wrapWidth(): UiModifier = copy(width = UiLength.Wrap)
     fun wrapHeight(): UiModifier = copy(height = UiLength.Wrap)
     fun padding(all: Int = 0): UiModifier = copy(padding = UiInsets(all))
@@ -88,6 +91,10 @@ internal fun UiModifier.resolveWidth(contentWidth: Int, availableWidth: Int): In
             is UiLength.Fixed -> rule.value
             is UiLength.Fill -> availableWidth
             is UiLength.Available -> UiRuntime.currentRuntime?.currentAvailableWidth() ?: availableWidth
+            is UiLength.Expand -> max(
+                contentWidth + padding.horizontal,
+                UiRuntime.currentRuntime?.currentAvailableWidth() ?: availableWidth
+            )
             UiLength.Wrap -> contentWidth + padding.horizontal
         }
     )
@@ -99,6 +106,10 @@ internal fun UiModifier.resolveHeight(contentHeight: Int, availableHeight: Int):
             is UiLength.Fixed -> rule.value
             is UiLength.Fill -> availableHeight
             is UiLength.Available -> UiRuntime.currentRuntime?.currentAvailableHeight() ?: availableHeight
+            is UiLength.Expand -> max(
+                contentHeight + padding.vertical,
+                UiRuntime.currentRuntime?.currentAvailableHeight() ?: availableHeight
+            )
             UiLength.Wrap -> contentHeight + padding.vertical
         }
     )

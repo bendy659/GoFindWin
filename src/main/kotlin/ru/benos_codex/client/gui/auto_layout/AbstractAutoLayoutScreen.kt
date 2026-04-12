@@ -72,7 +72,7 @@ abstract class AbstractAutoLayoutScreen(title: Component) : Screen(title) {
     }
 
     override fun keyPressed(keyEvent: KeyEvent): Boolean {
-        if (runtime?.keyPressed(keyEvent.key(), minecraft.hasControlDown(), minecraft?.hasShiftDown() == true) == true) {
+        if (runtime?.keyPressed(keyEvent.key(), minecraft.hasControlDown(), minecraft.hasShiftDown()) == true) {
             return true
         }
         return super.keyPressed(keyEvent)

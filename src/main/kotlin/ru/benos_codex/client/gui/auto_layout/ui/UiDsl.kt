@@ -236,6 +236,55 @@ class UiBuilder {
     }
 
     /**
+     * Adds a vertical split view with a draggable divider.
+     *
+     * [value] is interpreted on the scale defined by [range]. In typical usage this is a percentage
+     * value, for example `25..75` or `10..90`.
+     *
+     * @param value Mutable split position.
+     * @param range Allowed value range for [value].
+     * @param modifier Container sizing and padding rules.
+     * @param gap Space between top content, divider and bottom content.
+     * @param dividerHeight Visual divider height in pixels.
+     * @param minTopHeight Minimum height of the top pane in pixels.
+     * @param minBottomHeight Minimum height of the bottom pane in pixels.
+     * @param tooltip Optional tooltip attached to the divider region.
+     * @param top Top pane content.
+     * @param bottom Bottom pane content.
+     */
+    fun splitColumn(
+        value: KMutableProperty0<Int>,
+        range: IntRange = 0..100,
+        modifier: UiModifier = UiModifier.None,
+        gap: Int = 8,
+        dividerHeight: Int = 2,
+        minTopHeight: Int = 64,
+        minBottomHeight: Int = 64,
+        tooltip: UiTooltip? = null,
+        top: UiBuilder.() -> Unit,
+        bottom: UiBuilder.() -> Unit
+    ) {
+        children.add(UiSplitColumn(
+            value = value,
+            range = range,
+            modifier = modifier,
+            gap = gap,
+            dividerHeight = dividerHeight,
+            minTopHeight = minTopHeight,
+            minBottomHeight = minBottomHeight,
+            tooltip = tooltip,
+            top = UiBox(
+                UiModifier.None,
+                children = UiBuilder().apply(top).build()
+            ),
+            bottom = UiBox(
+                UiModifier.None,
+                children = UiBuilder().apply(bottom).build()
+            )
+        ))
+    }
+
+    /**
      * Adds a generic box container.
      *
      * @param modifier Container sizing and padding rules.
@@ -377,20 +426,23 @@ class UiBuilder {
      * @param placeholder Placeholder displayed while the value is empty.
      * @param maxLength Maximum stored text length.
      * @param tooltip Optional hover tooltip.
+     * @param onClick Optional callback invoked when the field is clicked.
      */
     fun textField(
         value: KMutableProperty0<String>,
         modifier: UiModifier = UiModifier.None,
         placeholder: Component? = null,
         maxLength: Int = 256,
-        tooltip: UiTooltip? = null
+        tooltip: UiTooltip? = null,
+        onClick: (() -> Unit)? = null
     ) {
         children.add(UiTextField(
             value,
             placeholder,
             modifier,
             maxLength,
-            tooltip = tooltip
+            tooltip = tooltip,
+            onClick = onClick
         ))
     }
 
@@ -548,6 +600,23 @@ class UiBuilder {
         tooltip: UiTooltip? = null
     ) {
         children.add(UiSlider(value, range, modifier, label, tooltip))
+    }
+
+    /**
+     * Adds a read-only progress bar.
+     *
+     * @param progress Current progress in the `0f..1f` range. Values outside the range are clamped.
+     * @param modifier Widget sizing and padding rules.
+     * @param label Optional formatter displayed above the bar.
+     * @param tooltip Optional hover tooltip.
+     */
+    fun progressBar(
+        progress: Float,
+        modifier: UiModifier = UiModifier.None,
+        label: ((Float) -> Component)? = null,
+        tooltip: UiTooltip? = null
+    ) {
+        children.add(UiProgressBar(progress, modifier, label, tooltip))
     }
 
     /**

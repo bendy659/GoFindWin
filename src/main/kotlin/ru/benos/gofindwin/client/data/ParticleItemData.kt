@@ -1,12 +1,14 @@
 package ru.benos.gofindwin.client.data
 
+import net.fabricmc.api.EnvType
+import net.fabricmc.api.Environment
+
+@Environment(EnvType.CLIENT)
 data class ParticleItemData(
-    var itemId: String,
+    var id: String,
     var itemRenderMode: ItemRenderMode,
-    var mColor: String = "#FFFFFF"
 ) {
     companion object {
         val Example: ParticleItemData = ParticleItemData("minecraft:diamond", ItemRenderMode.D3)
-        val ExampleStr: String = "item(\"minecraft:diamond\", #FFFFFF)"
     }
 }

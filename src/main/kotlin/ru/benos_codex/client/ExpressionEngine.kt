@@ -1,22 +1,15 @@
-package ru.benos.gofindwin.client.hud.effects
+package ru.benos_codex.client
 
+import net.fabricmc.api.EnvType
+import net.fabricmc.api.Environment
+import kotlin.math.cos
+import kotlin.math.sin
+import kotlin.random.Random
+
+@Environment(EnvType.CLIENT)
 class ExpressionEngine {
     private val functions = linkedMapOf<String, MutableList<FunctionDefinition>>()
     private val variables = linkedMapOf<String, (ExpressionContext) -> ExpressionValue>()
-
-    init {
-        addFunction("math.sin(a)") { args, _ -> NumberValue(kotlin.math.sin(args.double("a"))) }
-        addFunction("math.cos(a)") { args, _ -> NumberValue(kotlin.math.cos(args.double("a"))) }
-        addFunction("math.rand(max)") { args, _ ->
-            val max = args.double("max")
-            NumberValue(-max + kotlin.random.Random.nextDouble() * (max * 2.0))
-        }
-        addFunction("math.rand(min, max)") { args, _ ->
-            val min = args.double("min")
-            val max = args.double("max")
-            NumberValue(min + kotlin.random.Random.nextDouble() * (max - min))
-        }
-    }
 
     fun compile(source: String): CompiledExpression =
         CompiledExpression.of(ExpressionParser(source).parse())
@@ -35,6 +28,42 @@ class ExpressionEngine {
         functions.getOrPut(definition.name) { mutableListOf() }.add(definition)
     }
 
+    fun addNumberFunction(
+        signature: String,
+        handler: (arguments: FunctionArguments, context: ExpressionContext) -> Number
+    ) {
+        addFunction(signature) { arguments, context ->
+            NumberValue(handler(arguments, context).toDouble())
+        }
+    }
+
+    fun addBooleanFunction(
+        signature: String,
+        handler: (arguments: FunctionArguments, context: ExpressionContext) -> Boolean
+    ) {
+        addFunction(signature) { arguments, context ->
+            BoolValue(handler(arguments, context))
+        }
+    }
+
+    fun addStringFunction(
+        signature: String,
+        handler: (arguments: FunctionArguments, context: ExpressionContext) -> String
+    ) {
+        addFunction(signature) { arguments, context ->
+            StringValue(handler(arguments, context))
+        }
+    }
+
+    fun addHexFunction(
+        signature: String,
+        handler: (arguments: FunctionArguments, context: ExpressionContext) -> String
+    ) {
+        addFunction(signature) { arguments, context ->
+            HexValue(handler(arguments, context))
+        }
+    }
+
     fun addVariable(
         name: String,
         resolver: (ExpressionContext) -> ExpressionValue
@@ -48,6 +77,30 @@ class ExpressionEngine {
 
     fun addHexVariable(name: String, resolver: (ExpressionContext) -> String) {
         addVariable(name) { HexValue(resolver(it)) }
+    }
+
+    fun addBoolVariable(name: String, resolver: (ExpressionContext) -> Boolean) {
+        addVariable(name) { BoolValue(resolver(it)) }
+    }
+
+    fun addStringVariable(name: String, resolver: (ExpressionContext) -> String) {
+        addVariable(name) { StringValue(resolver(it)) }
+    }
+
+    fun addVec2Variable(name: String, resolver: (ExpressionContext) -> Vec2Value) {
+        addVariable(name, resolver)
+    }
+
+    fun addVec3Variable(name: String, resolver: (ExpressionContext) -> Vec3Value) {
+        addVariable(name, resolver)
+    }
+
+    fun addColorVariable(name: String, resolver: (ExpressionContext) -> ColorValue) {
+        addVariable(name, resolver)
+    }
+
+    fun addAnyVariable(name: String, resolver: (ExpressionContext) -> Any) {
+        addVariable(name) { resolver(it).toExpressionValue() }
     }
 
     internal fun invokeFunction(name: String, arguments: List<ExpressionValue>, context: ExpressionContext): ExpressionValue {
@@ -205,6 +258,30 @@ private class ExpressionParser(private val source: String) {
             return LiteralNode(HexValue(value.uppercase()))
         }
 
+        if (match('"')) {
+            val builder = StringBuilder()
+            while (index < source.length) {
+                val char = source[index++]
+                if (char == '"') {
+                    return LiteralNode(StringValue(builder.toString()))
+                }
+                if (char == '\\' && index < source.length) {
+                    val escaped = source[index++]
+                    builder.append(
+                        when (escaped) {
+                            'n' -> '\n'
+                            't' -> '\t'
+                            '"', '\\' -> escaped
+                            else -> escaped
+                        }
+                    )
+                    continue
+                }
+                builder.append(char)
+            }
+            error("Unterminated string literal")
+        }
+
         if (index < source.length && source[index].isLetter()) {
             val token = parseIdentifierToken()
             skipWhitespace()
@@ -224,6 +301,9 @@ private class ExpressionParser(private val source: String) {
 
                 return FunctionCallNode(token, arguments)
             }
+
+            if (token == "true") return LiteralNode(BoolValue(true))
+            if (token == "false") return LiteralNode(BoolValue(false))
 
             return VariableNode(token)
         }
@@ -349,6 +429,14 @@ class ExpressionContextBuilder {
         values[name] = HexValue(value)
     }
 
+    fun bool(name: String, value: Boolean) {
+        values[name] = BoolValue(value)
+    }
+
+    fun string(name: String, value: String) {
+        values[name] = StringValue(value)
+    }
+
     fun value(name: String, value: ExpressionValue) {
         values[name] = value
     }
@@ -360,6 +448,11 @@ class ExpressionContextBuilder {
 sealed interface ExpressionValue {
     fun asDouble(): Double = error("Value '$this' is not numeric")
     fun asHex(): String = error("Value '$this' is not hex")
+    fun asBoolean(): Boolean = error("Value '$this' is not boolean")
+    fun asString(): String = error("Value '$this' is not string")
+    fun asVec2(): Vec2Value = error("Value '$this' is not vec2")
+    fun asVec3(): Vec3Value = error("Value '$this' is not vec3")
+    fun asColor(): ColorValue = error("Value '$this' is not color")
 }
 
 data class NumberValue(val value: Double) : ExpressionValue {
@@ -368,6 +461,38 @@ data class NumberValue(val value: Double) : ExpressionValue {
 
 data class HexValue(val value: String) : ExpressionValue {
     override fun asHex(): String = value
+}
+
+data class BoolValue(val value: Boolean) : ExpressionValue {
+    override fun asBoolean(): Boolean = value
+}
+
+data class StringValue(val value: String) : ExpressionValue {
+    override fun asString(): String = value
+}
+
+data class Vec2Value(
+    val x: Double,
+    val y: Double
+) : ExpressionValue {
+    override fun asVec2(): Vec2Value = this
+}
+
+data class Vec3Value(
+    val x: Double,
+    val y: Double,
+    val z: Double
+) : ExpressionValue {
+    override fun asVec3(): Vec3Value = this
+}
+
+data class ColorValue(
+    val r: Int,
+    val g: Int,
+    val b: Int,
+    val a: Int = 255
+) : ExpressionValue {
+    override fun asColor(): ColorValue = this
 }
 
 internal sealed interface ExpressionNode {
@@ -511,6 +636,21 @@ class FunctionArguments internal constructor(
     fun hex(name: String): String =
         value(name).asHex()
 
+    fun boolean(name: String): Boolean =
+        value(name).asBoolean()
+
+    fun string(name: String): String =
+        value(name).asString()
+
+    fun vec2(name: String): Vec2Value =
+        value(name).asVec2()
+
+    fun vec3(name: String): Vec3Value =
+        value(name).asVec3()
+
+    fun color(name: String): ColorValue =
+        value(name).asColor()
+
     val size: Int get() = positional.size
 
     fun asList(): List<ExpressionValue> = positional.toList()
@@ -558,6 +698,20 @@ private data class FunctionDefinition(
 
 private fun Char.isHexDigit(): Boolean =
     this in '0'..'9' || this in 'a'..'f' || this in 'A'..'F'
+
+private fun Any.toExpressionValue(): ExpressionValue =
+    when (this) {
+        is ExpressionValue -> this
+        is Number -> NumberValue(this.toDouble())
+        is Boolean -> BoolValue(this)
+        is String -> if (startsWith("#")) HexValue(this) else StringValue(this)
+        is Pair<*, *> -> {
+            val x = (first as? Number)?.toDouble() ?: error("Unsupported Pair first value '$first'")
+            val y = (second as? Number)?.toDouble() ?: error("Unsupported Pair second value '$second'")
+            Vec2Value(x, y)
+        }
+        else -> error("Unsupported variable type '${this::class.simpleName}'")
+    }
 
 typealias ParticleExpressionEngine = ExpressionEngine
 typealias ParticleValue = ExpressionValue

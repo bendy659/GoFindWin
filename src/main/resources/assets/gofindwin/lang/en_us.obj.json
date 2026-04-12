@@ -57,6 +57,12 @@
                     "visual": "Visual",
                     "motion": "Motion"
                 },
+                "buttons": {
+                    "bake": "Bake"
+                },
+                "labels": {
+                    "baking": "Baking... | "
+                },
                 "props": {
                     "emitter_type": {
                         "label": "Emitter type",

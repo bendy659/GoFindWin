@@ -15,6 +15,40 @@ import kotlin.math.max
 import kotlin.math.PI
 import kotlin.reflect.KMutableProperty0
 
+object UiDebugOverlay {
+    var enabled: Boolean = false
+    var showLabels: Boolean = true
+    var showContentBoxes: Boolean = true
+}
+
+enum class UiDebugLayer(
+    val label: String,
+    val fillColor: Int,
+    val outlineColor: Int
+) {
+    ScrollArea("ScrollArea", ARGB.color(32, 80, 220, 255), ARGB.color(220, 80, 220, 255)),
+    Grid("Grid", ARGB.color(28, 255, 180, 80), ARGB.color(220, 255, 180, 80)),
+    Column("Column", ARGB.color(28, 120, 255, 180), ARGB.color(220, 120, 255, 180)),
+    Row("Row", ARGB.color(28, 120, 180, 255), ARGB.color(220, 120, 180, 255)),
+    Box("Box", ARGB.color(24, 255, 120, 220), ARGB.color(220, 255, 120, 220)),
+    Group("Group", ARGB.color(24, 255, 220, 120), ARGB.color(220, 255, 220, 120)),
+    Label("Label", ARGB.color(18, 240, 240, 240), ARGB.color(190, 240, 240, 240)),
+    ItemStack("ItemStack", ARGB.color(28, 180, 255, 120), ARGB.color(220, 180, 255, 120)),
+    Render("Render", ARGB.color(28, 180, 180, 180), ARGB.color(220, 180, 180, 180)),
+    Separator("Separator", ARGB.color(40, 255, 255, 255), ARGB.color(220, 255, 255, 255)),
+    Dropdown("Dropdown", ARGB.color(28, 220, 120, 255), ARGB.color(220, 220, 120, 255)),
+    Button("Button", ARGB.color(28, 255, 120, 160), ARGB.color(220, 255, 120, 160)),
+    TextField("TextField", ARGB.color(28, 120, 255, 255), ARGB.color(220, 120, 255, 255)),
+    Checkbox("Checkbox", ARGB.color(28, 140, 255, 120), ARGB.color(220, 140, 255, 120)),
+    Multiline("Multiline", ARGB.color(28, 255, 160, 120), ARGB.color(220, 255, 160, 120)),
+    Slider("Slider", ARGB.color(28, 255, 210, 120), ARGB.color(220, 255, 210, 120)),
+    Progress("Progress", ARGB.color(28, 120, 255, 140), ARGB.color(220, 120, 255, 140)),
+    Split("Split", ARGB.color(28, 255, 120, 120), ARGB.color(220, 255, 120, 120)),
+    Gap("Gap", ARGB.color(56, 255, 80, 80), ARGB.color(190, 255, 80, 80)),
+    Padding("Padding", ARGB.color(24, 255, 180, 40), ARGB.color(220, 255, 180, 40)),
+    Content("Content", ARGB.color(18, 40, 255, 120), ARGB.color(220, 40, 255, 120))
+}
+
 /** Per-frame UI context that stores input state, hover state and transient interaction regions. */
 class UiRuntime(
     var guiGraphics: GuiGraphics,
@@ -37,7 +71,9 @@ class UiRuntime(
     private val textInputRects: MutableMap<String, UiRect> = mutableMapOf()
     private val dropdownInputs: MutableMap<String, UiDropdownInput> = mutableMapOf()
     private val dropdownRegions: MutableMap<String, MutableList<UiRect>> = mutableMapOf()
+    private val debugLabelSlots: MutableMap<Pair<Int, Int>, Int> = mutableMapOf()
     private var activeDropdownKey: String? = null
+    private var passiveRenderDepth: Int = 0
     private var hoveredTooltip: UiTooltip? = null
 
     fun beginFrame(
@@ -59,10 +95,12 @@ class UiRuntime(
         textInputRects.clear()
         dropdownInputs.clear()
         dropdownRegions.clear()
+        debugLabelSlots.clear()
         hoveredTooltip = null
     }
 
     fun addClickRegion(rect: UiRect, onClick: (mouseX: Double, mouseY: Double) -> Unit) {
+        if (passiveRenderDepth > 0) return
         clickRegions += ClickRegion(rect, onClick)
     }
 
@@ -72,6 +110,7 @@ class UiRuntime(
         onDrag: (mouseX: Double, mouseY: Double) -> Unit,
         onEnd: (mouseX: Double, mouseY: Double) -> Unit = { _, _ -> }
     ) {
+        if (passiveRenderDepth > 0) return
         dragRegions += DragRegion(rect, onStart, onDrag, onEnd)
     }
 
@@ -181,10 +220,12 @@ class UiRuntime(
     }
 
     fun registerDropdownInput(key: String, input: UiDropdownInput) {
+        if (passiveRenderDepth > 0) return
         dropdownInputs[key] = input
     }
 
     fun registerDropdownArea(key: String, rect: UiRect) {
+        if (passiveRenderDepth > 0) return
         dropdownRegions.getOrPut(key) { mutableListOf() } += rect
     }
 
@@ -205,10 +246,12 @@ class UiRuntime(
     }
 
     fun addScrollRegion(rect: UiRect, onScroll: (scrollY: Double) -> Unit) {
+        if (passiveRenderDepth > 0) return
         scrollRegions += ScrollRegion(rect, onScroll)
     }
 
     fun setTooltip(rect: UiRect, tooltip: UiTooltip?) {
+        if (passiveRenderDepth > 0) return
         if (tooltip == null) return
         if (rect.contains(mouseX.toDouble(), mouseY.toDouble())) {
             hoveredTooltip = tooltip
@@ -239,6 +282,84 @@ class UiRuntime(
         overlayRenderers.forEach { renderer ->
             renderer(screenWidth, screenHeight)
         }
+    }
+
+    fun renderPassive(block: () -> Unit) {
+        val previousMouseX = mouseX
+        val previousMouseY = mouseY
+        passiveRenderDepth++
+        mouseX = Int.MIN_VALUE / 4
+        mouseY = Int.MIN_VALUE / 4
+        try {
+            block()
+        } finally {
+            passiveRenderDepth--
+            mouseX = previousMouseX
+            mouseY = previousMouseY
+        }
+    }
+
+    fun debugRect(rect: UiRect, layer: UiDebugLayer, label: String = layer.label) {
+        if (!UiDebugOverlay.enabled) return
+        addOverlayRenderer { _, _ ->
+            guiGraphics.nextStratum()
+            guiGraphics.fill(rect.x, rect.y, rect.right, rect.bottom, layer.fillColor)
+            guiGraphics.fill(rect.x, rect.y, rect.right, rect.y + 1, layer.outlineColor)
+            guiGraphics.fill(rect.x, rect.bottom - 1, rect.right, rect.bottom, layer.outlineColor)
+            guiGraphics.fill(rect.x, rect.y, rect.x + 1, rect.bottom, layer.outlineColor)
+            guiGraphics.fill(rect.right - 1, rect.y, rect.right, rect.bottom, layer.outlineColor)
+            if (UiDebugOverlay.showLabels && rect.width > 24 && rect.height > font.lineHeight + 4) {
+                val anchorX = rect.x.coerceAtLeast(0)
+                val anchorY = rect.y.coerceAtLeast(0)
+                val slotKey = (anchorX / 12) to (anchorY / 12)
+                val slotIndex = debugLabelSlots.getOrDefault(slotKey, 0)
+                debugLabelSlots[slotKey] = slotIndex + 1
+
+                val textWidth = font.width(label)
+                val textHeight = font.lineHeight
+                val labelX = rect.x + 2
+                val labelY = rect.y + 2 + slotIndex * (textHeight + 3)
+                val padX = 2
+                val padY = 1
+                val boxLeft = labelX - padX
+                val boxTop = labelY - padY
+                val boxRight = labelX + textWidth + padX
+                val boxBottom = labelY + textHeight + padY
+
+                guiGraphics.fill(boxLeft, boxTop, boxRight, boxBottom, ARGB.color(210, 12, 12, 16))
+                guiGraphics.fill(boxLeft, boxTop, boxRight, boxTop + 1, layer.outlineColor)
+                guiGraphics.fill(boxLeft, boxBottom - 1, boxRight, boxBottom, layer.outlineColor)
+                guiGraphics.fill(boxLeft, boxTop, boxLeft + 1, boxBottom, layer.outlineColor)
+                guiGraphics.fill(boxRight - 1, boxTop, boxRight, boxBottom, layer.outlineColor)
+                guiGraphics.drawString(font, label, labelX, labelY, CommonColors.WHITE)
+            }
+        }
+    }
+
+    fun debugPaddedRect(bounds: UiRect, padding: UiInsets, label: String) {
+        if (!UiDebugOverlay.enabled || !UiDebugOverlay.showContentBoxes) return
+        if (padding.horizontal <= 0 && padding.vertical <= 0) {
+            debugRect(bounds, UiDebugLayer.Content, "$label.Content")
+            return
+        }
+
+        val inner = bounds.shrink(padding)
+        if (inner.width <= 0 || inner.height <= 0) return
+
+        if (inner.y > bounds.y) {
+            debugRect(UiRect(bounds.x, bounds.y, bounds.width, inner.y - bounds.y), UiDebugLayer.Padding, "$label.PaddingTop")
+        }
+        if (inner.bottom < bounds.bottom) {
+            debugRect(UiRect(bounds.x, inner.bottom, bounds.width, bounds.bottom - inner.bottom), UiDebugLayer.Padding, "$label.PaddingBottom")
+        }
+        if (inner.x > bounds.x) {
+            debugRect(UiRect(bounds.x, inner.y, inner.x - bounds.x, inner.height), UiDebugLayer.Padding, "$label.PaddingLeft")
+        }
+        if (inner.right < bounds.right) {
+            debugRect(UiRect(inner.right, inner.y, bounds.right - inner.right, inner.height), UiDebugLayer.Padding, "$label.PaddingRight")
+        }
+
+        debugRect(inner, UiDebugLayer.Content, "$label.Content")
     }
 
     fun pushAvailableSpace(width: Int, height: Int) {
@@ -401,6 +522,8 @@ class UiScrollArea(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.ScrollArea)
+        runtime.debugPaddedRect(bounds, modifier.padding, "ScrollArea")
         val inner = bounds.shrink(modifier.padding)
         val contentWidth = (inner.width - scrollBarWidth - scrollGap).coerceAtLeast(0)
         runtime.pushAvailableSpace(contentWidth, inner.height)
@@ -486,12 +609,14 @@ private fun UiNode.measureForColumn(runtime: UiRuntime, maxWidth: Int, maxHeight
         is UiLength.Fixed -> widthRule.value
         is UiLength.Fill -> 0
         is UiLength.Available -> 0
+        is UiLength.Expand -> maxWidth
         UiLength.Wrap -> maxWidth
     }.coerceAtLeast(modifier.minWidth)
     val probeHeight = when (heightRule) {
         is UiLength.Fixed -> heightRule.value
         is UiLength.Fill -> 0
         is UiLength.Available -> 0
+        is UiLength.Expand -> maxHeight
         UiLength.Wrap -> maxHeight
     }.coerceAtLeast(modifier.minHeight)
     return measure(runtime, probeWidth, probeHeight)
@@ -504,12 +629,14 @@ private fun UiNode.measureForRow(runtime: UiRuntime, maxWidth: Int, maxHeight: I
         is UiLength.Fixed -> widthRule.value
         is UiLength.Fill -> 0
         is UiLength.Available -> 0
+        is UiLength.Expand -> maxWidth
         UiLength.Wrap -> maxWidth
     }.coerceAtLeast(modifier.minWidth)
     val probeHeight = when (heightRule) {
         is UiLength.Fixed -> heightRule.value
         is UiLength.Fill -> 0
         is UiLength.Available -> 0
+        is UiLength.Expand -> maxHeight
         UiLength.Wrap -> maxHeight
     }.coerceAtLeast(modifier.minHeight)
     return measure(runtime, probeWidth, probeHeight)
@@ -547,6 +674,8 @@ class UiGrid(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Grid)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Grid")
         val inner = bounds.shrink(modifier.padding)
         val measured = measureGrid(runtime, inner.width, inner.height)
         val columnX = IntArray(columns)
@@ -592,7 +721,7 @@ class UiGrid(
         rowHeights.indices.forEach { row ->
             if (rowHeights[row] == 0) {
                 rowHeights[row] = when (val rule = modifier.height) {
-                    is UiLength.Fixed, is UiLength.Fill, is UiLength.Available -> 0
+                    is UiLength.Fixed, is UiLength.Fill, is UiLength.Available, is UiLength.Expand -> 0
                     UiLength.Wrap -> 0
                 }
             }
@@ -601,10 +730,10 @@ class UiGrid(
         val totalGapHeight = verticalGap * (rows - 1).coerceAtLeast(0)
         val contentHeight = rowHeights.sum() + totalGapHeight
         val referenceHeight = when (modifier.height) {
-            is UiLength.Available -> runtime.currentAvailableHeight() ?: availableHeight
+            is UiLength.Available, is UiLength.Expand -> runtime.currentAvailableHeight() ?: availableHeight
             else -> availableHeight
         }
-        if ((modifier.height is UiLength.Fill || modifier.height is UiLength.Available) && referenceHeight > contentHeight) {
+        if ((modifier.height is UiLength.Fill || modifier.height is UiLength.Available || modifier.height is UiLength.Expand) && referenceHeight > contentHeight) {
             val extra = referenceHeight - contentHeight
             distributeExtra(rowHeights, extra, rowWeights)
         }
@@ -675,6 +804,8 @@ open class UiContainer(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Column)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Column")
         val inner = bounds.shrink(modifier.padding)
         children.forEach { child ->
             val measured = child.measure(runtime, inner.width, inner.height)
@@ -685,11 +816,13 @@ open class UiContainer(
                     when (child.modifier.width) {
                         is UiLength.Fill -> inner.width
                         is UiLength.Available -> runtime.currentAvailableWidth() ?: inner.width
+                        is UiLength.Expand -> measured.width
                         else -> measured.width.coerceAtMost(inner.width)
                     },
                     when (child.modifier.height) {
                         is UiLength.Fill -> inner.height
                         is UiLength.Available -> runtime.currentAvailableHeight() ?: inner.height
+                        is UiLength.Expand -> measured.height
                         else -> measured.height.coerceAtMost(inner.height)
                     }
                 )
@@ -724,6 +857,7 @@ class UiColumn(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Group)
         val inner = bounds.shrink(modifier.padding)
         val measuredChildren = children.map { child -> AxisChildMeasure(child, child.measureForColumn(runtime, inner.width, inner.height)) }
         val fixedHeight = measuredChildren.sumOf { entry ->
@@ -744,6 +878,7 @@ class UiColumn(
             when (val rule = entry.node.modifier.height) {
                 is UiLength.Fill -> rule.weight.toDouble()
                 is UiLength.Available -> rule.weight.toDouble()
+                is UiLength.Expand -> 0.0
                 else -> 0.0
             }
         }
@@ -761,15 +896,20 @@ class UiColumn(
                     if (fillWeight <= 0.0) 0
                     else ((remainingHeight * (rule.weight / fillWeight)).toInt()).coerceAtLeast(child.modifier.minHeight)
                 }
+                is UiLength.Expand -> measured.height
                 else -> measured.height
             }.coerceAtLeast(child.modifier.minHeight)
             val childWidth = when (child.modifier.width) {
                 is UiLength.Fill -> inner.width
                 is UiLength.Available -> runtime.currentAvailableWidth() ?: inner.width
+                is UiLength.Expand -> measured.width
                 else -> measured.width.coerceAtMost(inner.width)
             }.coerceAtLeast(child.modifier.minWidth)
 
             child.render(runtime, UiRect(inner.x, cursorY, childWidth, childHeight))
+            if (gap > 0 && entry != measuredChildren.last()) {
+                runtime.debugRect(UiRect(inner.x, cursorY + childHeight, inner.width, gap), UiDebugLayer.Gap, "ColumnGap")
+            }
             cursorY += childHeight + gap
         }
     }
@@ -799,6 +939,8 @@ class UiRow(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Row)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Row")
         val inner = bounds.shrink(modifier.padding)
         val measuredChildren = children.map { child -> AxisChildMeasure(child, child.measureForRow(runtime, inner.width, inner.height)) }
         val fixedWidth = measuredChildren.sumOf { entry ->
@@ -819,6 +961,7 @@ class UiRow(
             when (val rule = entry.node.modifier.width) {
                 is UiLength.Fill -> rule.weight.toDouble()
                 is UiLength.Available -> rule.weight.toDouble()
+                is UiLength.Expand -> 0.0
                 else -> 0.0
             }
         }
@@ -836,15 +979,20 @@ class UiRow(
                     if (fillWeight <= 0.0) 0
                     else ((remainingWidth * (rule.weight / fillWeight)).toInt()).coerceAtLeast(child.modifier.minWidth)
                 }
+                is UiLength.Expand -> measured.width
                 else -> measured.width
             }.coerceAtLeast(child.modifier.minWidth)
             val childHeight = when (child.modifier.height) {
                 is UiLength.Fill -> inner.height
                 is UiLength.Available -> runtime.currentAvailableHeight() ?: inner.height
+                is UiLength.Expand -> measured.height
                 else -> measured.height.coerceAtMost(inner.height)
             }.coerceAtLeast(child.modifier.minHeight)
 
             child.render(runtime, UiRect(cursorX, inner.y, childWidth, childHeight))
+            if (gap > 0 && entry != measuredChildren.last()) {
+                runtime.debugRect(UiRect(cursorX + childWidth, inner.y, gap, inner.height), UiDebugLayer.Gap, "RowGap")
+            }
             cursorX += childWidth + gap
         }
     }
@@ -873,6 +1021,8 @@ class UiBox(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Box)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Box")
         backgroundColor?.let { runtime.guiGraphics.fill(bounds.x, bounds.y, bounds.right, bounds.bottom, it) }
         outline?.let { border ->
             val size = border.size.coerceAtLeast(1)
@@ -888,11 +1038,13 @@ class UiBox(
             val childWidth = when (child.modifier.width) {
                 is UiLength.Fill -> inner.width
                 is UiLength.Available -> runtime.currentAvailableWidth() ?: inner.width
+                is UiLength.Expand -> measured.width
                 else -> measured.width.coerceAtMost(inner.width)
             }
             val childHeight = when (child.modifier.height) {
                 is UiLength.Fill -> inner.height
                 is UiLength.Available -> runtime.currentAvailableHeight() ?: inner.height
+                is UiLength.Expand -> measured.height
                 else -> measured.height.coerceAtMost(inner.height)
             }
             child.render(runtime, UiRect(inner.x, inner.y, childWidth, childHeight))
@@ -938,6 +1090,7 @@ class UiGroup(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Label)
         val inner = bounds.shrink(modifier.padding)
         val headerHeight = runtime.font.lineHeight + headerVerticalPadding * 2
         val isExpanded = expanded.get()
@@ -1024,6 +1177,22 @@ class UiSpacer(
     override fun render(runtime: UiRuntime, bounds: UiRect) = Unit
 }
 
+class UiPassiveNode(
+    private val child: UiNode
+) : UiNode {
+    override val modifier: UiModifier
+        get() = child.modifier
+
+    override fun measure(runtime: UiRuntime, maxWidth: Int, maxHeight: Int): UiSize =
+        child.measure(runtime, maxWidth, maxHeight)
+
+    override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.renderPassive {
+            child.render(runtime, bounds)
+        }
+    }
+}
+
 /** Text widget with optional wrapping, alignment and tooltip support. */
 class UiLabel(
     private val text: Component,
@@ -1046,6 +1215,8 @@ class UiLabel(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Label)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Label")
         val inner = bounds.shrink(modifier.padding)
         runtime.setTooltip(bounds, tooltip)
         val lines = measureLines(runtime, inner.width)
@@ -1098,6 +1269,7 @@ class UiItemStackView(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.ItemStack)
         runtime.setTooltip(bounds, tooltip)
         if (stack.isEmpty) return
 
@@ -1161,6 +1333,7 @@ class UiRenderNode(
         )
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Render)
         runtime.setTooltip(bounds, tooltip)
         renderer(runtime.guiGraphics, Minecraft.getInstance().deltaTracker, bounds)
     }
@@ -1184,6 +1357,7 @@ class UiSeparator(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Separator)
         runtime.setTooltip(bounds, tooltip)
         if (bounds.width <= 0 || bounds.height <= 0) return
 
@@ -1221,6 +1395,7 @@ class UiDropdown<T>(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Dropdown)
         runtime.registerDropdownInput(key, this)
         runtime.registerDropdownArea(key, bounds)
         val hovered = bounds.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
@@ -1517,6 +1692,8 @@ class UiButton(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Button)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Button")
         val hovered = bounds.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
         val pressed = runtime.isPressed(key)
         val background = when {
@@ -1563,7 +1740,8 @@ class UiTextField(
     override val modifier: UiModifier = UiModifier.None,
     private val maxLength: Int = 256,
     private val key: String = "textfield:${value.name}",
-    private val tooltip: UiTooltip? = null
+    private val tooltip: UiTooltip? = null,
+    private val onClick: (() -> Unit)? = null
 ) : UiNode, UiTextInput {
     override fun measure(runtime: UiRuntime, maxWidth: Int, maxHeight: Int): UiSize {
         val contentWidth = 120
@@ -1575,6 +1753,8 @@ class UiTextField(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.TextField)
+        runtime.debugPaddedRect(bounds, modifier.padding, "TextField")
         latestRuntime = runtime
         val state = runtime.textInputState(key, this)
         runtime.setTextInputRect(key, bounds)
@@ -1620,6 +1800,7 @@ class UiTextField(
         runtime.guiGraphics.disableScissor()
 
         runtime.addClickRegion(bounds) { mouseX, _ ->
+            onClick?.invoke()
             runtime.focus(key)
             state.caretIndex = caretIndexForX(runtime, current, mouseX.toInt() - textX)
         }
@@ -1720,6 +1901,8 @@ class UiIntField(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.TextField, "IntField")
+        runtime.debugPaddedRect(bounds, modifier.padding, "IntField")
         latestRuntime = runtime
         val state = runtime.textInputState(key, this)
         runtime.setTextInputRect(key, bounds)
@@ -1913,6 +2096,8 @@ class UiFloatField(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.TextField, "FloatField")
+        runtime.debugPaddedRect(bounds, modifier.padding, "FloatField")
         latestRuntime = runtime
         val state = runtime.textInputState(key, this)
         runtime.setTextInputRect(key, bounds)
@@ -2105,6 +2290,8 @@ class UiCheckbox(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Checkbox)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Checkbox")
         val inner = bounds.shrink(modifier.padding)
         val hovered = bounds.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
         val checked = value.get()
@@ -2167,6 +2354,8 @@ class UiMultilineTextField(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Multiline)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Multiline")
         latestRuntime = runtime
         val state = runtime.textInputState(key, this)
         runtime.setTextInputRect(key, bounds)
@@ -2692,6 +2881,7 @@ class UiSlider(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugPaddedRect(bounds, modifier.padding, "Slider")
         val inner = bounds.shrink(modifier.padding)
         val currentValue = value.get().coerceIn(range.first, range.last)
         if (currentValue != value.get()) value.set(currentValue)
@@ -2755,6 +2945,61 @@ class UiSlider(
     }
 }
 
+class UiProgressBar(
+    private val progress: Float,
+    override val modifier: UiModifier = UiModifier.None,
+    private val label: ((Float) -> Component)? = null,
+    private val tooltip: UiTooltip? = null
+) : UiNode {
+    override fun measure(runtime: UiRuntime, maxWidth: Int, maxHeight: Int): UiSize {
+        val barWidth = 120
+        val barHeight = 14
+        val labelHeight = if (label == null) 0 else runtime.font.lineHeight + 4
+        return UiSize(
+            modifier.resolveWidth(barWidth, maxWidth),
+            modifier.resolveHeight(barHeight + labelHeight, maxHeight)
+        )
+    }
+
+    override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Progress)
+        runtime.debugPaddedRect(bounds, modifier.padding, "Progress")
+        val clampedProgress = progress.coerceIn(0f, 1f)
+        val inner = bounds.shrink(modifier.padding)
+        val labelHeight = if (label == null) 0 else runtime.font.lineHeight + 4
+        val barRect = UiRect(
+            x = inner.x,
+            y = inner.y + labelHeight,
+            width = inner.width.coerceAtLeast(12),
+            height = (inner.height - labelHeight).coerceAtLeast(8)
+        )
+        val hovered = barRect.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
+        val borderColor = if (hovered) Theme.hoverBorder else Theme.border
+        val fillWidth = ((barRect.width - 2).coerceAtLeast(0) * clampedProgress).toInt()
+
+        label?.invoke(clampedProgress)?.let { text ->
+            runtime.guiGraphics.drawString(runtime.font, text, inner.x, inner.y, CommonColors.WHITE)
+        }
+
+        runtime.setTooltip(barRect, tooltip)
+        runtime.guiGraphics.fill(barRect.x, barRect.y, barRect.right, barRect.bottom, Theme.progressTrack)
+        runtime.guiGraphics.fill(barRect.x, barRect.y, barRect.right, barRect.y + 1, borderColor)
+        runtime.guiGraphics.fill(barRect.x, barRect.bottom - 1, barRect.right, barRect.bottom, borderColor)
+        runtime.guiGraphics.fill(barRect.x, barRect.y, barRect.x + 1, barRect.bottom, borderColor)
+        runtime.guiGraphics.fill(barRect.right - 1, barRect.y, barRect.right, barRect.bottom, borderColor)
+
+        if (fillWidth > 0) {
+            runtime.guiGraphics.fill(
+                barRect.x + 1,
+                barRect.y + 1,
+                barRect.x + 1 + fillWidth,
+                barRect.bottom - 1,
+                if (clampedProgress >= 1f) Theme.progressFillComplete else Theme.progressFill
+            )
+        }
+    }
+}
+
 /** Two-pane horizontal splitter controlled by an integer range, typically percent-based. */
 class UiSplitRow(
     private val value: KMutableProperty0<Int>,
@@ -2768,6 +3013,8 @@ class UiSplitRow(
     private val left: UiNode,
     private val right: UiNode
 ) : UiNode {
+    private val interactionKey: String = "split-row:${System.identityHashCode(this)}"
+
     init {
         require(!range.isEmpty()) { "SplitRow range must not be empty" }
     }
@@ -2785,6 +3032,8 @@ class UiSplitRow(
     }
 
     override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Split, "SplitRow")
+        runtime.debugPaddedRect(bounds, modifier.padding, "SplitRow")
         val inner = bounds.shrink(modifier.padding)
         val currentValue = value.get().coerceIn(range.first, range.last)
         if (currentValue != value.get()) value.set(currentValue)
@@ -2799,11 +3048,11 @@ class UiSplitRow(
             safeMinLeft = (safeMinLeft * scale).toInt().coerceAtLeast(0)
             safeMinRight = (availableWidth - safeMinLeft).coerceAtLeast(0)
         }
-        val clampMaxLeft = (availableWidth - safeMinRight).coerceAtLeast(0)
-        val clampMinLeft = safeMinLeft.coerceAtMost(clampMaxLeft)
-        val ratio = if (range.first == range.last) 0f else {
-            (currentValue - range.first).toFloat() / (range.last - range.first).toFloat()
-        }
+        val percentMinLeft = ((availableWidth * (range.first.coerceIn(0, 100) / 100f)).toInt()).coerceAtLeast(0)
+        val percentMaxLeft = ((availableWidth * (range.last.coerceIn(0, 100) / 100f)).toInt()).coerceAtMost(availableWidth)
+        val clampMaxLeft = minOf((availableWidth - safeMinRight).coerceAtLeast(0), percentMaxLeft)
+        val clampMinLeft = maxOf(safeMinLeft.coerceAtMost(availableWidth), percentMinLeft).coerceAtMost(clampMaxLeft)
+        val ratio = currentValue.coerceIn(0, 100) / 100f
         val leftWidth = (availableWidth * ratio).toInt().coerceIn(clampMinLeft, clampMaxLeft)
         val rightWidth = (availableWidth - leftWidth).coerceAtLeast(0)
 
@@ -2816,15 +3065,17 @@ class UiSplitRow(
             dividerAreaRect.height
         )
         val rightRect = UiRect(dividerAreaRect.right, inner.y, rightWidth, inner.height)
+        runtime.debugRect(dividerAreaRect, UiDebugLayer.Gap, "SplitGap")
 
         left.render(runtime, leftRect)
         right.render(runtime, rightRect)
 
         val hovered = dividerAreaRect.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
+        val active = runtime.isPressed(interactionKey)
         runtime.setTooltip(dividerAreaRect, tooltip)
         val lineHeight = (dividerRect.height / 5).coerceIn(24, 64)
         val lineY = dividerRect.y + (dividerRect.height - lineHeight) / 2
-        if (hovered) {
+        if (hovered || active) {
             runtime.guiGraphics.fill(
                 dividerAreaRect.x,
                 lineY - 8,
@@ -2838,20 +3089,130 @@ class UiSplitRow(
             lineY,
             dividerRect.right,
             lineY + lineHeight,
-            if (hovered) Theme.splitDividerHover else Theme.splitDivider
+            if (hovered || active) Theme.splitDividerHover else Theme.splitDivider
         )
 
         fun applySplit(mouseX: Double) {
             val rawLeft = (mouseX - inner.x.toDouble() - totalGap / 2.0).toInt()
             val clampedLeft = rawLeft.coerceIn(clampMinLeft, clampMaxLeft)
             val rawRatio = if (availableWidth == 0) 0.0 else clampedLeft.toDouble() / availableWidth.toDouble()
-            val next = (range.first + ((range.last - range.first) * rawRatio).toInt()).coerceIn(range.first, range.last)
+            val next = (rawRatio * 100.0).toInt().coerceIn(range.first, range.last)
             value.set(next)
         }
 
         runtime.addDragRegion(
             rect = dividerAreaRect,
-            onDrag = { mouseX, _ -> applySplit(mouseX) }
+            onStart = { _, _ -> runtime.setPressed(interactionKey, true) },
+            onDrag = { mouseX, _ -> applySplit(mouseX) },
+            onEnd = { _, _ -> runtime.setPressed(interactionKey, false) }
+        )
+    }
+}
+
+class UiSplitColumn(
+    private val value: KMutableProperty0<Int>,
+    private val range: IntRange,
+    override val modifier: UiModifier = UiModifier.None,
+    private val gap: Int = 8,
+    private val dividerHeight: Int = 2,
+    private val minTopHeight: Int = 64,
+    private val minBottomHeight: Int = 64,
+    private val tooltip: UiTooltip? = null,
+    private val top: UiNode,
+    private val bottom: UiNode
+) : UiNode {
+    private val interactionKey: String = "split-column:${System.identityHashCode(this)}"
+
+    init {
+        require(!range.isEmpty()) { "SplitColumn range must not be empty" }
+    }
+
+    override fun measure(runtime: UiRuntime, maxWidth: Int, maxHeight: Int): UiSize {
+        val inner = UiRect(0, 0, maxWidth, maxHeight).shrink(modifier.padding)
+        val topSize = top.measureForColumn(runtime, inner.width, inner.height)
+        val bottomSize = bottom.measureForColumn(runtime, inner.width, inner.height)
+        val contentWidth = max(topSize.width, bottomSize.width)
+        val contentHeight = max(topSize.height, minTopHeight) + gap + max(bottomSize.height, minBottomHeight)
+        return UiSize(
+            modifier.resolveWidth(contentWidth, maxWidth),
+            modifier.resolveHeight(contentHeight, maxHeight)
+        )
+    }
+
+    override fun render(runtime: UiRuntime, bounds: UiRect) {
+        runtime.debugRect(bounds, UiDebugLayer.Split, "SplitColumn")
+        runtime.debugPaddedRect(bounds, modifier.padding, "SplitColumn")
+        val inner = bounds.shrink(modifier.padding)
+        val currentValue = value.get().coerceIn(range.first, range.last)
+        if (currentValue != value.get()) value.set(currentValue)
+
+        val totalGap = gap.coerceAtLeast(dividerHeight)
+        val availableHeight = (inner.height - totalGap).coerceAtLeast(0)
+        var safeMinTop = minTopHeight.coerceAtLeast(0)
+        var safeMinBottom = minBottomHeight.coerceAtLeast(0)
+        val minSum = safeMinTop + safeMinBottom
+        if (minSum > availableHeight && minSum > 0) {
+            val scale = availableHeight.toFloat() / minSum.toFloat()
+            safeMinTop = (safeMinTop * scale).toInt().coerceAtLeast(0)
+            safeMinBottom = (availableHeight - safeMinTop).coerceAtLeast(0)
+        }
+        val percentMinTop = ((availableHeight * (range.first.coerceIn(0, 100) / 100f)).toInt()).coerceAtLeast(0)
+        val percentMaxTop = ((availableHeight * (range.last.coerceIn(0, 100) / 100f)).toInt()).coerceAtMost(availableHeight)
+        val clampMaxTop = minOf((availableHeight - safeMinBottom).coerceAtLeast(0), percentMaxTop)
+        val clampMinTop = maxOf(safeMinTop.coerceAtMost(availableHeight), percentMinTop).coerceAtMost(clampMaxTop)
+        val ratio = currentValue.coerceIn(0, 100) / 100f
+        val topHeight = (availableHeight * ratio).toInt().coerceIn(clampMinTop, clampMaxTop)
+        val bottomHeight = (availableHeight - topHeight).coerceAtLeast(0)
+
+        val topRect = UiRect(inner.x, inner.y, inner.width, topHeight)
+        val dividerAreaRect = UiRect(inner.x, inner.y + topHeight, inner.width, totalGap)
+        val dividerRect = UiRect(
+            dividerAreaRect.x,
+            dividerAreaRect.y + (dividerAreaRect.height - dividerHeight) / 2,
+            dividerAreaRect.width,
+            dividerHeight
+        )
+        val bottomRect = UiRect(inner.x, dividerAreaRect.bottom, inner.width, bottomHeight)
+        runtime.debugRect(dividerAreaRect, UiDebugLayer.Gap, "SplitGap")
+
+        top.render(runtime, topRect)
+        bottom.render(runtime, bottomRect)
+
+        val hovered = dividerAreaRect.contains(runtime.mouseX.toDouble(), runtime.mouseY.toDouble())
+        val active = runtime.isPressed(interactionKey)
+        runtime.setTooltip(dividerAreaRect, tooltip)
+        val lineWidth = (dividerRect.width / 5).coerceIn(24, 64)
+        val lineX = dividerRect.x + (dividerRect.width - lineWidth) / 2
+        if (hovered || active) {
+            runtime.guiGraphics.fill(
+                lineX - 8,
+                dividerAreaRect.y,
+                lineX + lineWidth + 8,
+                dividerAreaRect.bottom,
+                Theme.splitDividerGlow
+            )
+        }
+        runtime.guiGraphics.fill(
+            lineX,
+            dividerRect.y,
+            lineX + lineWidth,
+            dividerRect.bottom,
+            if (hovered || active) Theme.splitDividerHover else Theme.splitDivider
+        )
+
+        fun applySplit(mouseY: Double) {
+            val rawTop = (mouseY - inner.y.toDouble() - totalGap / 2.0).toInt()
+            val clampedTop = rawTop.coerceIn(clampMinTop, clampMaxTop)
+            val rawRatio = if (availableHeight == 0) 0.0 else clampedTop.toDouble() / availableHeight.toDouble()
+            val next = (rawRatio * 100.0).toInt().coerceIn(range.first, range.last)
+            value.set(next)
+        }
+
+        runtime.addDragRegion(
+            rect = dividerAreaRect,
+            onStart = { _, _ -> runtime.setPressed(interactionKey, true) },
+            onDrag = { _, mouseY -> applySplit(mouseY) },
+            onEnd = { _, _ -> runtime.setPressed(interactionKey, false) }
         )
     }
 }

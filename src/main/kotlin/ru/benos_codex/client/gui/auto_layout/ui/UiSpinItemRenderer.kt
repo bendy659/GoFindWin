@@ -9,6 +9,8 @@ import com.mojang.blaze3d.textures.GpuTextureView
 import com.mojang.blaze3d.textures.TextureFormat
 import com.mojang.blaze3d.vertex.PoseStack
 import com.mojang.math.Axis
+import net.fabricmc.api.EnvType
+import net.fabricmc.api.Environment
 import net.minecraft.client.DeltaTracker
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.GuiGraphics
@@ -26,6 +28,7 @@ import net.minecraft.world.item.ItemStack
 import org.joml.Matrix3x2f
 import kotlin.math.PI
 
+@Environment(EnvType.CLIENT)
 object UiItemStackRenderer {
     private const val THREE_D_RENDER_PADDING_MULTIPLIER = 1.75f
 

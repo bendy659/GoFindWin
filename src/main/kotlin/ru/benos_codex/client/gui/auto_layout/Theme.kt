@@ -26,6 +26,9 @@ object Theme {
     val scrollTrack               : Int = ARGB.color(96, 0, 0, 0)
     val scrollThumb               : Int = ARGB.color(200, 220, 220, 220)
     val scrollThumbHover          : Int = ARGB.color(235, 245, 245, 245)
+    val progressTrack             : Int = ARGB.color(120, 24, 24, 32)
+    val progressFill              : Int = ARGB.color(220, 236, 214, 120)
+    val progressFillComplete      : Int = ARGB.color(220, 120, 220, 160)
 
     val splitDivider              : Int = ARGB.color(165, 220, 220, 220)
     val splitDividerHover         : Int = ARGB.color(245, 255, 250, 190)
