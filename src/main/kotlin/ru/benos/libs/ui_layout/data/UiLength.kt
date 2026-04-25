@@ -1,9 +1,11 @@
 package ru.benos.libs.ui_layout.data
 
 sealed interface UiLength {
-    data class Fixed    (val value: Int)        : UiLength
-    data class Fill     (val weight: Float = 1f): UiLength
-    data class Available(val weight: Float = 1f): UiLength
-    data class Expand   (val weight: Float = 1f): UiLength
-    data object Wrap                            : UiLength
+    sealed interface UiWeighted : UiLength { val weight: Float }
+
+    data class Fixed    (val value: Int)                  : UiLength
+    data class Fill     (override val weight: Float = 1f) : UiWeighted
+    data class Available(override val weight: Float = 1f) : UiWeighted
+    data class Expand   (override val weight: Float = 1f) : UiWeighted
+    data object Wrap                                      : UiLength
 }

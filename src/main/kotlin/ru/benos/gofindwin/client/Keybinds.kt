@@ -6,17 +6,18 @@ import net.minecraft.client.KeyMapping
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.screens.Screen
 import org.lwjgl.glfw.GLFW
+import ru.benos.gofindwin.GoFindWinConst.MOD_ID
 import ru.benos.gofindwin.GoFindWinConst.invoke
-import ru.benos.gofindwin.GoFindWinConst.mident
+import ru.benos.libs.helpers.IdentifierHelper.mident
 import ru.benos.libs.ui_layout.DemoUiLayoutScreen
 
 object Keybinds {
     private data class Keybind(val mapping: KeyMapping, val onClick: () -> Unit)
 
     private val QUEUE: MutableList<Keybind> = mutableListOf()
-    private val CATEGORY: KeyMapping.Category = KeyMapping.Category("keybinds".mident)
+    private val CATEGORY: KeyMapping.Category = KeyMapping.Category("keybinds".mident(MOD_ID))
 
-    val KEY_OpenDemoScreen: KeyMapping = screenKeybind("open_demo_screen", GLFW.GLFW_KEY_UNKNOWN, DemoUiLayoutScreen)
+    val KEY_OpenDemoScreen: KeyMapping = screenKeybind("open_demo_screen", GLFW.GLFW_KEY_UNKNOWN, ::DemoUiLayoutScreen)
 
     fun init() {
         // Registration //
@@ -40,9 +41,9 @@ object Keybinds {
         return keybind(keybind)
     }
 
-    private fun screenKeybind(id: String, key: Int, screen: Screen): KeyMapping {
+    private fun screenKeybind(id: String, key: Int, screen: () -> Screen): KeyMapping {
         val mapping = KeyMapping(id, key, CATEGORY)
-        val keybind = Keybind(mapping) { Minecraft.getInstance().setScreen(screen) }
+        val keybind = Keybind(mapping) { Minecraft.getInstance().setScreen(screen()) }
 
         return keybind(keybind)
     }

@@ -4,16 +4,17 @@ import net.minecraft.util.ARGB
 
 data class UiBoxOutlineColor(
     val width: Int,
-    val color: Int
+    val color: Int = 0xFFFFFFFF.toInt()
 ) {
-    companion object {
-        fun uiBoxOutlineColor(width: Int = 1, color: Int): UiBoxOutlineColor =
-            UiBoxOutlineColor(width, color)
+    // RGBA [Int] //
+    constructor(
+        width: Int = 1,
+        a: Int = 255, r: Int, g: Int, b: Int
+    ): this(width, ARGB.color(a, r, g, b))
 
-        fun uiBoxOutlineColor(width: Int = 1, r: Int, g: Int, b: Int, a: Int = 255): UiBoxOutlineColor =
-            uiBoxOutlineColor(width, ARGB.color(a, r, g, b))
-
-        fun uiBoxOutlineColor(width: Int = 1, r: Float, g: Float, b: Float, a: Float = 1.0f): UiBoxOutlineColor =
-            uiBoxOutlineColor(width, ARGB.colorFromFloat(a, r, g, b))
-    }
+    // RGBA [Float] //
+    constructor(
+        width: Int = 1,
+        a: Float = 1.0f, r: Float, g: Float, b: Float
+    ): this(width, ARGB.colorFromFloat(a, r, g, b))
 }

@@ -12,10 +12,4 @@ object GoFindWinConst {
         if (this@invoke)
             block()
     }
-
-    val String.ident: Identifier
-        get() = Identifier.parse(this@ident)
-
-    val String.mident: Identifier
-        get() = "$MOD_ID:${this@mident}".ident
 }

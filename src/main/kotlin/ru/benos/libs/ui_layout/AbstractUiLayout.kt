@@ -1,28 +1,35 @@
 package ru.benos.libs.ui_layout
 
-import net.minecraft.client.gui.Font
 import net.minecraft.client.gui.GuiGraphics
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.client.input.KeyEvent
 import net.minecraft.client.input.MouseButtonEvent
 import net.minecraft.network.chat.Component
+import ru.benos.libs.ui_layout.builder.UiBuilder
+import ru.benos.libs.ui_layout.data.UiModifier
 import ru.benos.libs.ui_layout.data.UiRect
+import ru.benos.libs.ui_layout.data.theme.UiBoxTheme
+import ru.benos.libs.ui_layout.nodes.UiBoxNode
 import ru.benos.libs.ui_layout.nodes.UiNode
 
-abstract class AbstractUiLayout: Screen {
-    constructor(title: Component): super(title)
-
+abstract class AbstractUiLayout(title: Component) : Screen(title) {
     private var runtime: UiRuntime? = null
 
-    abstract fun buildUi(): UiNode
+    abstract fun UiBuilder.ui()
+
+    private fun buildUi(): UiNode =
+        UiBoxNode(
+            boxTheme = UiBoxTheme.TRANSPARENT,
+            children = UiBuilder().apply { ui() }.build(),
+            enableScissor = false,
+            modifier = UiModifier
+        )
 
     open fun contentBounds(): UiRect =
         UiRect(0, 0, width, height)
 
     override fun render(guiGraphics: GuiGraphics, i: Int, j: Int, f: Float) {
         super.render(guiGraphics, i, j, f)
-
-        (font as Any? as? Font) ?: return
 
         val frameRuntime = runtime
             ?: UiRuntime(
@@ -32,13 +39,22 @@ abstract class AbstractUiLayout: Screen {
             )
         runtime = frameRuntime
 
-        frameRuntime.startFrame(guiGraphics, font, i, j)
+        frameRuntime.newFrame(guiGraphics, font, i, j)
 
         buildUi().render(frameRuntime, contentBounds())
     }
 
     // Mouse events //
     override fun mouseClicked(mouseButtonEvent: MouseButtonEvent, bl: Boolean): Boolean {
+        val click = runtime?.clicked(
+            mouseButtonEvent.button(),
+            mouseButtonEvent.x.toInt(),
+            mouseButtonEvent.y.toInt()
+        )
+
+        if (click == true)
+            return true
+
         return super.mouseClicked(mouseButtonEvent, bl)
     }
 
@@ -47,6 +63,15 @@ abstract class AbstractUiLayout: Screen {
     }
 
     override fun mouseReleased(mouseButtonEvent: MouseButtonEvent): Boolean {
+        val click = runtime?.released(
+            mouseButtonEvent.button(),
+            mouseButtonEvent.x.toInt(),
+            mouseButtonEvent.y.toInt()
+        )
+
+        if (click == true)
+            return true
+
         return super.mouseReleased(mouseButtonEvent)
     }
 

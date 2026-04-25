@@ -28,4 +28,7 @@ data class UiRect(
 
         return c0 && c1 && c2 && c3
     }
+
+    fun contains(pX: Int, pY: Int): Boolean =
+        contains(pX.toDouble(), pY.toDouble())
 }

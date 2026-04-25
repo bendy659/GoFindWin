@@ -5,8 +5,6 @@ import net.fabricmc.api.EnvType
 import net.fabricmc.api.Environment
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry
 import net.fabricmc.fabric.api.resource.v1.ResourceLoader
-import net.minecraft.network.chat.Component
-import net.minecraft.network.chat.Style
 import net.minecraft.server.packs.PackType
 import net.minecraft.server.packs.resources.ResourceManager
 import net.minecraft.server.packs.resources.ResourceManagerReloadListener
@@ -14,7 +12,8 @@ import net.minecraft.util.ARGB
 import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import ru.benos.gofindwin.GoFindWinConst
-import ru.benos.gofindwin.GoFindWinConst.mident
+import ru.benos.gofindwin.GoFindWinConst.MOD_ID
+import ru.benos.libs.helpers.IdentifierHelper.mident
 
 @Environment(EnvType.CLIENT)
 object GoFindWinClient : ClientModInitializer {
@@ -33,8 +32,8 @@ object GoFindWinClient : ClientModInitializer {
 
     val LOGGER: Logger = LoggerFactory.getLogger("${GoFindWinConst.MOD_NAME} | Client")
 
-    val GoFindWinClientReload
-        get() = ResourceManagerReloadListener { resourceManager: ResourceManager ->
+    val GoFindWinClientReload =
+        ResourceManagerReloadListener { resourceManager: ResourceManager ->
 
         }
 
@@ -44,39 +43,10 @@ object GoFindWinClient : ClientModInitializer {
         Keybinds.init()
 
         ResourceLoader.get(PackType.CLIENT_RESOURCES)
-            .registerReloader("resources".mident, GoFindWinClientReload)
+            .registerReloader("resources".mident(MOD_ID), GoFindWinClientReload)
 
-        HudElementRegistry.addFirst("particle".mident) { guiGraphics, deltaTracker ->
+        HudElementRegistry.addFirst("particle".mident(MOD_ID)) { guiGraphics, deltaTracker ->
 
         }
-    }
-
-    val String.literal: Component
-        get() = Component.literal(this@literal)
-
-    val String.translate: Component
-        get() = Component.translatable(this@translate)
-
-    val Iterable<Component>.component: Component
-        get() {
-            val component = Component.empty()
-            this@component.forEach { component.append(it) }
-
-            return component
-        }
-
-    fun Component.style(
-        textColor   : Int,
-        isBold      : Boolean,
-        isItalic    : Boolean,
-        isUnderlined: Boolean
-    ): Component {
-        val style = Style.EMPTY
-            .withColor(textColor)
-            .withBold(isBold)
-            .withItalic(isItalic)
-            .withUnderlined(isUnderlined)
-
-        return this@style.copy().withStyle(style)
     }
 }
