@@ -7,14 +7,14 @@ import ru.benos.libs.ui_layout.data.UiModifier
 import ru.benos.libs.ui_layout.data.UiRect
 import ru.benos.libs.ui_layout.data.UiSize
 import ru.benos.libs.ui_layout.data.axis.UiAxis
-import ru.benos.libs.ui_layout.data.theme.UiBoxTheme
+import ru.benos.libs.ui_layout.data.theme.UiBoxColorTheme
 import ru.benos.libs.ui_layout.nodes.UiBoxNode
 import ru.benos.libs.ui_layout.nodes.UiNode
 
 @UiDsl
 class UiLinearLayoutNode(
     private val axis: UiAxis,
-    boxTheme: UiBoxTheme,
+    boxTheme: UiBoxColorTheme,
     enableScissor: Boolean,
     private val gap: Int,
     private val children: List<UiNode>,
@@ -103,9 +103,14 @@ class UiLinearLayoutNode(
                         )
                     )
 
+            val crossAlign = axiz(
+                calcAlign(node.modifier.vAlign, inner.height, crossSize),
+                calcAlign(node.modifier.hAlign, inner.width, crossSize)
+            )
+
             val childBound = axiz(
-                UiRect(cursor, inner.y, mainSize, crossSize),
-                UiRect(inner.x, cursor, crossSize, mainSize)
+                UiRect(cursor, inner.y + crossAlign, mainSize, crossSize),
+                UiRect(inner.x + crossAlign, cursor, crossSize, mainSize)
             )
 
             node.render(runtime, childBound)

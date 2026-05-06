@@ -4,6 +4,7 @@ import net.minecraft.client.gui.Font
 import net.minecraft.client.gui.GuiGraphics
 import ru.benos.libs.ui_layout.data.UiRect
 import ru.benos.libs.ui_layout.data.UiSize
+import ru.benos.libs.ui_layout.data.UiTransform
 import ru.benos.libs.ui_layout.data.region.UiClickRegion
 
 class UiRuntime(
@@ -18,14 +19,17 @@ class UiRuntime(
     private val availableSpaceStack: MutableList<UiSize> = mutableListOf()
     private val overlayRenderers   : MutableList<(Int, Int) -> Unit> = mutableListOf()
 
-    private val mouseClickRegions  : MutableSet<UiClickRegion> = mutableSetOf()
-    private val mouseReleaseRegions: MutableSet<UiClickRegion> = mutableSetOf()
+    private val mouseClickRegions  : MutableList<UiClickRegion> = mutableListOf()
+    private val mouseReleaseRegions: MutableList<UiClickRegion> = mutableListOf()
 
     private val mouseHoveredRects    : MutableSet<UiRect> = mutableSetOf()
     private val mouseHoveredRectsNext: MutableSet<UiRect> = mutableSetOf()
     private val mouseClickedRects : MutableSet<UiRect> = mutableSetOf()
     private val mouseReleasedRects: MutableSet<UiRect> = mutableSetOf()
     private val mouseReleasedRectsNext: MutableSet<UiRect> = mutableSetOf()
+
+    var deltaTime: Float = 0f
+    var totalTime: Float = 0f
 
     fun newFrame(
         guiGraphics: GuiGraphics,
@@ -57,27 +61,28 @@ class UiRuntime(
     }
 
     // Regions utils //
-    fun addMouseClicked(rect: UiRect, onClicked: (Int, Int, Int) -> Boolean) =
-        mouseClickRegions.add(UiClickRegion(rect, onClicked))
+    fun addMouseClicked(rect: UiRect, transform: UiTransform, onClicked: (Int, Int, Int) -> Boolean) =
+        mouseClickRegions.add(UiClickRegion(rect, transform, onClicked))
 
-    fun addMouseReleased(rect: UiRect, onReleased: (Int, Int, Int) -> Boolean) =
-        mouseReleaseRegions.add(UiClickRegion(rect, onReleased))
+    fun addMouseReleased(rect: UiRect, transform: UiTransform, onReleased: (Int, Int, Int) -> Boolean) =
+        mouseReleaseRegions.add(UiClickRegion(rect, transform, onReleased))
 
     // Actions utils //
     fun clicked(key: Int, mouseX: Int, mouseY: Int): Boolean =
         click(key, mouseX, mouseY, mouseClickRegions, mouseClickedRects)
 
     fun released(key: Int, mouseX: Int, mouseY: Int): Boolean {
-        mouseClickedRects.clear() // ← только это остаётся
+        mouseClickedRects.clear()
         return click(key, mouseX, mouseY, mouseReleaseRegions, mouseReleasedRectsNext)
     }
 
-    private fun click(key: Int, mouseX: Int, mouseY: Int, regions: Set<UiClickRegion>, rects: MutableSet<UiRect>): Boolean {
+    private fun click(key: Int, mouseX: Int, mouseY: Int, regions: List<UiClickRegion>, rects: MutableSet<UiRect>): Boolean {
         for (region in regions.reversed()) {
-            val condition0 = region.rect.contains(mouseX, mouseY)
-            val condition1 = region.clickEvent(key, mouseX, mouseY)
+            val (localX, localY) = region.transform.normalizeMouse(mouseX.toFloat(), mouseY.toFloat(), region.rect)
+            if (!region.rect.contains(localX.toDouble(), localY.toDouble()))
+                continue
 
-            if (condition0 && condition1) {
+            if (region.clickEvent(key, localX.toInt(), localY.toInt())) {
                 rects += region.rect
                 return true
             }
@@ -94,8 +99,8 @@ class UiRuntime(
     fun isReleased(rect: UiRect): Boolean =
         mouseReleasedRects.contains(rect)
 
-    fun trackHover(rect: UiRect): Boolean {
-        val hovered = rect.contains(mouseX, mouseY)
+    fun trackHover(rect: UiRect, mouseX: Float, mouseY: Float): Boolean {
+        val hovered = rect.contains(mouseX.toDouble(), mouseY.toDouble())
         if (hovered)
             mouseHoveredRectsNext += rect
 

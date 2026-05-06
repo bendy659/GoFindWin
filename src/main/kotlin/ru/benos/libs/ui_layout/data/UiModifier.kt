@@ -1,5 +1,7 @@
 package ru.benos.libs.ui_layout.data
 
+import net.minecraft.util.Mth
+import net.minecraft.world.phys.Vec2
 import ru.benos.libs.ui_layout.UiRuntime
 import ru.benos.libs.ui_layout.builder.UiBuilder
 import ru.benos.libs.ui_layout.data.axis.UiAlign
@@ -14,6 +16,7 @@ open class UiModifier(
     val height   : UiLength    = UiLength.Wrap,
     val hAlign   : UiAlign = UiAlign.Start,
     val vAlign   : UiAlign = UiAlign.Start,
+    val transform: UiTransform = UiTransform.DEFAULT,
     val tooltip  : UiTooltip?  = null,
 
     // Events //
@@ -37,14 +40,15 @@ open class UiModifier(
 
     fun copy(
         // Basic //
-        minWidth  : Int      = this.minWidth,
-        minHeight : Int      = this.minHeight,
-        padding   : UiInsets = this.padding,
-        width     : UiLength = this.width,
-        height    : UiLength = this.height,
-        hAlign: UiAlign = this.hAlign,
-        vAlign: UiAlign = this.vAlign,
-        tooltip   : UiTooltip?  = this.tooltip,
+        minWidth : Int         = this.minWidth,
+        minHeight: Int         = this.minHeight,
+        padding  : UiInsets    = this.padding,
+        width    : UiLength    = this.width,
+        height   : UiLength    = this.height,
+        hAlign   : UiAlign     = this.hAlign,
+        vAlign   : UiAlign     = this.vAlign,
+        transform: UiTransform = this.transform,
+        tooltip  : UiTooltip?  = this.tooltip,
 
         // Events //
         onMouseEnter  : (()         -> Unit)? = this.onMouseEnter,
@@ -69,6 +73,7 @@ open class UiModifier(
             padding,
             width, height,
             hAlign, vAlign,
+            transform,
             tooltip,
 
             // Events //
@@ -123,6 +128,21 @@ open class UiModifier(
         this.copy(vAlign = alignment)
     fun align(hAlign: UiAlign = UiAlign.Start, vAlign: UiAlign = UiAlign.Start): UiModifier =
         this.copy(hAlign = hAlign, vAlign = vAlign)
+
+    // Transform //
+    fun transform(origin: Vec2 = this.transform.origin, translate: Vec2 = this.transform.translate, rotation: Float = this.transform.rotation, scale: Vec2 = this.transform.scale): UiModifier =
+        this.copy(transform = UiTransform(origin, translate, rotation, scale))
+
+    fun origin(x: Float = this.transform.origin.x, y: Float = this.transform.origin.y): UiModifier =
+        transform(origin = Vec2(x, y))
+    fun translate(x: Float = this.transform.translate.x, y: Float = this.transform.translate.y): UiModifier =
+        transform(translate = Vec2(x, y))
+    fun rotation(rad: Float = this.transform.rotation): UiModifier =
+        transform(rotation = rad)
+    fun rotationDeg(deg: Float = this.transform.rotation * (180.0f / Mth.PI)): UiModifier =
+        transform(rotation = ((Mth.PI / 180.0f) * deg))
+    fun scale(x: Float = this.transform.scale.x, y: Float = this.transform.scale.y): UiModifier =
+        transform(scale = Vec2(x, y))
 
     // Tooltip //
     fun tooltip(content: UiBuilder.() -> Unit): UiModifier {

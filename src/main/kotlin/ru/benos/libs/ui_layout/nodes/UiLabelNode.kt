@@ -7,8 +7,12 @@ import ru.benos.libs.ui_layout.data.UiModifier
 import ru.benos.libs.ui_layout.data.UiRect
 import ru.benos.libs.ui_layout.data.UiSize
 import ru.benos.libs.ui_layout.data.axis.UiTextAlign
+import ru.benos.libs.ui_layout.data.theme.UiBoxColorTheme
 
 open class UiLabelNode(
+    private val boxTheme         : UiBoxColorTheme,
+    private val enableScissor    : Boolean,
+
     private val component        : Component,
     private val textAlign        : UiTextAlign,
     private val wrap             : Boolean,
@@ -16,7 +20,7 @@ open class UiLabelNode(
     private val enableLabelShadow: Boolean,
 
     override val modifier: UiModifier
-) : UiNode() {
+) : UiBoxNode(boxTheme, enableScissor, listOf(), modifier) {
     override fun measure(runtime: UiRuntime, maxWidth: Int, maxHeight: Int): UiSize {
         val innerWidth = (maxWidth - modifier.padding.horizontal).coerceAtLeast(0)
         val lines = measureLines(runtime, innerWidth)
@@ -30,10 +34,8 @@ open class UiLabelNode(
         )
     }
 
-    override fun render(runtime: UiRuntime, bounds: UiRect) {
-        super.render(runtime, bounds)
-
-        val inner = bounds.shrink(modifier.padding)
+    override fun renderChildren(runtime: UiRuntime, inner: UiRect) {
+        val inner = inner.shrink(modifier.padding)
         val lines = measureLines(runtime, inner.width)
 
         lines.forEachIndexed { index, line ->

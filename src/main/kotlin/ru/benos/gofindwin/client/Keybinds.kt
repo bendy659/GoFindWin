@@ -18,6 +18,7 @@ object Keybinds {
     private val CATEGORY: KeyMapping.Category = KeyMapping.Category("keybinds".mident(MOD_ID))
 
     val KEY_OpenDemoScreen: KeyMapping = screenKeybind("open_demo_screen", GLFW.GLFW_KEY_UNKNOWN, ::DemoUiLayoutScreen)
+    val KEY_ExperimentalScreen: KeyMapping = screenKeybind("open_experimental_screen", GLFW.GLFW_KEY_UNKNOWN, ::ExperimentalScreen)
 
     fun init() {
         // Registration //

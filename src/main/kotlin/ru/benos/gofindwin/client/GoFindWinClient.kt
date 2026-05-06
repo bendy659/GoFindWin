@@ -40,6 +40,8 @@ object GoFindWinClient : ClientModInitializer {
     override fun onInitializeClient() {
         LOGGER.info("Initialization...")
 
+        System.loadLibrary("renderdoc")
+
         Keybinds.init()
 
         ResourceLoader.get(PackType.CLIENT_RESOURCES)

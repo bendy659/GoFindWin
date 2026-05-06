@@ -2,32 +2,29 @@ package ru.benos.libs.ui_layout
 
 import net.minecraft.util.ARGB
 import org.joml.Vector2i
+import ru.benos.gofindwin.GoFindWinConst.MOD_ID
 import ru.benos.libs.helpers.ComponentHelper.component
 import ru.benos.libs.helpers.ComponentHelper.literal
 import ru.benos.libs.helpers.ComponentHelper.style
+import ru.benos.libs.helpers.IdentifierHelper.mident
 import ru.benos.libs.ui_layout.builder.UiBuilder
-import ru.benos.libs.ui_layout.data.UiBoxOutlineColor
 import ru.benos.libs.ui_layout.data.UiModifier
 import ru.benos.libs.ui_layout.data.axis.UiAlign
 import ru.benos.libs.ui_layout.data.axis.UiTextAlign
-import ru.benos.libs.ui_layout.data.theme.UiBoxTheme
+import ru.benos.libs.ui_layout.data.theme.UiBoxColorTheme
+import ru.benos.libs.ui_layout.data.theme.UiCanvas
 
 class DemoUiLayoutScreen: AbstractUiLayout("Demo UI Screen".literal) {
     private var mousePosition: Vector2i = Vector2i(0, 0)
 
-    private val mainBoxTheme: UiBoxTheme = UiBoxTheme.DEFAULT
-        .hovered(
-            background = UiBoxTheme.DEFAULT.background,
-            outline = UiBoxOutlineColor(1, 192, 255, 255, 255)
-        )
-        .clicked(
-            background = UiBoxTheme.DEFAULT.background,
-            outline = UiBoxOutlineColor(1, 64, 255, 255, 255)
-        )
-        .released(
-            background = UiBoxTheme.DEFAULT.background,
-            outline = UiBoxOutlineColor(1, 192, 255, 255, 0)
-        )
+    private val mainBoxTheme: UiBoxColorTheme = UiBoxColorTheme.DEFAULT
+
+    private val cogwheel: UiBoxColorTheme = UiBoxColorTheme(
+        backgroundNormal = UiCanvas.Texture("textures/gui/oxidized_copper_gear.png".mident(MOD_ID))
+    )
+
+    private val cogwheelRotation: Float
+        get() = (runtime?.totalTime ?: 0.0f) * 90.0f
 
     override fun UiBuilder.ui() {
         box(
@@ -44,8 +41,6 @@ class DemoUiLayoutScreen: AbstractUiLayout("Demo UI Screen".literal) {
                     .fillHeight()
                     .padding(vertical = 8)
                     .onMouseHovered { mouseX, mouseY -> mousePosition.set(mouseX, mouseY) }
-                    .onMouseClicked { _, _, _ -> true }
-                    .onMouseReleased { _, _, _ -> true }
             ) {
                 label(
                     component = listOf(
@@ -65,6 +60,25 @@ class DemoUiLayoutScreen: AbstractUiLayout("Demo UI Screen".literal) {
                     textAlign = UiTextAlign.Center,
                     modifier = UiModifier
                         .availableWidth()
+                )
+
+                box(
+                    boxTheme = cogwheel,
+                    modifier = UiModifier
+                        .align(UiAlign.End, UiAlign.Start)
+                        .fixedWidth(160)
+                        .fixedHeight(160)
+                        .translate(64f + 16f)
+                        .rotationDeg(cogwheelRotation)
+                )
+                box(
+                    boxTheme = cogwheel,
+                    modifier = UiModifier
+                        .align(UiAlign.End, UiAlign.Start)
+                        .fixedWidth(96)
+                        .fixedHeight(96)
+                        .translate(64f - 16f, -16f)
+                        .rotationDeg(-cogwheelRotation / 1.125f * 2f)
                 )
             }
         }

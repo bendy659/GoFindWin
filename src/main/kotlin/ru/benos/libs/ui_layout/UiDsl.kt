@@ -6,7 +6,7 @@ import ru.benos.libs.ui_layout.builder.UiBuilder
 import ru.benos.libs.ui_layout.data.UiModifier
 import ru.benos.libs.ui_layout.data.axis.UiAxis
 import ru.benos.libs.ui_layout.data.axis.UiTextAlign
-import ru.benos.libs.ui_layout.data.theme.UiBoxTheme
+import ru.benos.libs.ui_layout.data.theme.UiBoxColorTheme
 import ru.benos.libs.ui_layout.nodes.UiBoxNode
 import ru.benos.libs.ui_layout.nodes.UiLabelNode
 import ru.benos.libs.ui_layout.nodes.grid.UiLinearLayoutNode
@@ -16,10 +16,10 @@ annotation class UiDsl
 
 // Box //
 fun UiBuilder.box(
-    boxTheme: UiBoxTheme = UiBoxTheme.TRANSPARENT,
+    boxTheme: UiBoxColorTheme = UiBoxColorTheme.TRANSPARENT,
     enableScissor  : Boolean = false,
     modifier       : UiModifier = UiModifier,
-    block: UiBuilder.() -> Unit
+    block: UiBuilder.() -> Unit = { }
 ) {
     val children = UiBuilder().apply(block).build()
     val node = UiBoxNode(boxTheme, enableScissor, children, modifier)
@@ -29,6 +29,8 @@ fun UiBuilder.box(
 
 // Label //
 fun UiBuilder.label(
+    boxTheme: UiBoxColorTheme = UiBoxColorTheme.TRANSPARENT,
+    enableScissor: Boolean = false,
     component: Component,
     textAlign: UiTextAlign = UiTextAlign.Left,
     wrap: Boolean = true,
@@ -36,7 +38,7 @@ fun UiBuilder.label(
     enableLabelShadow: Boolean = false,
     modifier: UiModifier = UiModifier
 ) {
-    val node = UiLabelNode(component, textAlign, wrap, maxLines, enableLabelShadow, modifier)
+    val node = UiLabelNode(boxTheme, enableScissor, component, textAlign, wrap, maxLines, enableLabelShadow, modifier)
 
     this@label.addNode(node)
 }
@@ -44,7 +46,7 @@ fun UiBuilder.label(
 // private //
 private fun UiBuilder.linearLayout(
     axis: UiAxis,
-    boxTheme: UiBoxTheme,
+    boxTheme: UiBoxColorTheme,
     enableScissor: Boolean,
     gap: Int,
     modifier: UiModifier,
@@ -59,7 +61,7 @@ private fun UiBuilder.linearLayout(
 
 // Row //
 fun UiBuilder.row(
-    boxTheme: UiBoxTheme = UiBoxTheme.TRANSPARENT,
+    boxTheme: UiBoxColorTheme = UiBoxColorTheme.TRANSPARENT,
     enableScissor: Boolean = true,
     gap: Int = 0,
     modifier: UiModifier = UiModifier,
@@ -69,7 +71,7 @@ fun UiBuilder.row(
 
 // Column //
 fun UiBuilder.column(
-    boxTheme: UiBoxTheme = UiBoxTheme.TRANSPARENT,
+    boxTheme: UiBoxColorTheme = UiBoxColorTheme.TRANSPARENT,
     enableScissor: Boolean = true,
     gap: Int = 0,
     modifier: UiModifier = UiModifier,
@@ -79,6 +81,8 @@ fun UiBuilder.column(
 
 // Label //
 fun UiBuilder.label(
+    boxTheme: UiBoxColorTheme = UiBoxColorTheme.TRANSPARENT,
+    enableScissor: Boolean = false,
     text: String,
     textAlign: UiTextAlign = UiTextAlign.Left,
     wrap: Boolean = true,
@@ -86,4 +90,4 @@ fun UiBuilder.label(
     enableLabelShadow: Boolean = false,
     modifier: UiModifier = UiModifier
 ) =
-    this@label.label(text.literal, textAlign, wrap, maxLines, enableLabelShadow, modifier)
+    this@label.label(boxTheme, enableScissor, text.literal, textAlign, wrap, maxLines, enableLabelShadow, modifier)
